@@ -115,9 +115,12 @@ all agents". On Kubernetes, updates go through the DaemonSet image tag instead.
    trusted by the target host)
    The script downloads the right-arch binary, writes the config (mother IP embedded),
    installs and starts the systemd service.
-3. Kubernetes alternative: `deploy/k8s/daemonset.yaml` (hostPID + `/proc` mount),
+3. The same command can be produced on the mother host via CLI, without the panel:
+   `feast-watch generate --name=DB_Sunucusu` → prints the one-liner with the
+   mother's own IP embedded.
+4. Kubernetes alternative: `deploy/k8s/daemonset.yaml` (hostPID + `/proc` mount),
    token supplied as a Secret.
-4. On the agent's first push the server flips from *pending* to *online* in the panel.
+5. On the agent's first push the server flips from *pending* to *online* in the panel.
 
 ## Mother
 
@@ -146,9 +149,20 @@ Go binary with embedded SQLite. Single service, single data file.
   (server, metric, window) → min/max/avg.
 - Tiers: raw (10s) → 1-minute → 1-hour rollup tables.
 - Default retention (all configurable): raw 48 h, 1-minute 15 days, 1-hour **75 days**.
-- **The chart API reads only from rollup tables.** The panel passes the desired
-  interval (5m/1h/1d/…) as a parameter; the mother returns the summarized series.
-  Raw data never reaches the frontend.
+- **The chart API reads only from rollup tables.** The panel passes intent only
+  (`GET /api/chart?server=X&metric=cpu.usage&range=7d&interval=1h`); the mother picks
+  the tier and bounds the point count — resolution is decided server-side, never by
+  the frontend:
+
+  | Requested range | Tier used                              | Points returned |
+  | --------------- | -------------------------------------- | --------------- |
+  | 1–48 h          | `rollup_1m` (grouped to 5m/15m as needed) | ~100–300      |
+  | 2–15 days       | `rollup_1m` grouped hourly              | ~100–360        |
+  | 15–75 days      | `rollup_1h`, grouped daily as needed    | ~360            |
+
+  Every response is a bounded `[{ts, min, max, avg}]` series (KB-scale regardless of
+  range). Raw data never reaches the frontend: the chart endpoint never queries the
+  raw `samples` table, and raw data is deleted after 48 h anyway.
 
 ## Security
 
