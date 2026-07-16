@@ -64,15 +64,33 @@ Monitoring must never burden the monitored server.
 ### Collectors
 
 Only the collectors listed in the mother's response run; everything else stays off.
+Every metric on this list answers "which failure would we miss without it" — curated
+from the meeting notes plus the essential parts of the earlier (never implemented)
+backend monitoring design (`feast-mobile-backend/docs/superpowers/specs/2026-07-03-monitoring-design.md`).
 
-| Collector    | Data                                                                 |
-| ------------ | -------------------------------------------------------------------- |
-| `cpu`        | CPU usage %                                                          |
-| `memory`     | RAM used/total **and** swap used/total together (headroom visibility) |
-| `uptime`     | System uptime                                                        |
-| `disk`       | Disk usage % (space only — no I/O rates)                             |
-| `centrifugo` | Open client connections vs. configured maximum, via Centrifugo API (enabled only on the Centrifugo server) |
-| `k8s`        | Node ready status, pod phase counts, container restart spikes (enabled only on k8s nodes/masters) |
+**Base set — enabled on every server:**
+
+| Collector | Data                                                                  | Failure it catches            |
+| --------- | --------------------------------------------------------------------- | ----------------------------- |
+| `cpu`     | CPU usage %                                                           | Server saturated              |
+| `memory`  | RAM used/total **and** swap used/total together (headroom visibility) | Spill into swap = RAM exhausted |
+| `uptime`  | System uptime                                                         | Unexpected restarts           |
+| `disk`    | Disk usage % (space only — no I/O rates)                              | Disk full stops everything    |
+
+**Per-server extras — the "max connections vs. used" family, enabled only where the
+service runs:**
+
+| Collector    | Data                                                            | Source                                   |
+| ------------ | ---------------------------------------------------------------- | ---------------------------------------- |
+| `centrifugo` | Total client connections vs. configured maximum                  | Centrifugo server API `info` (localhost) |
+| `dragonfly`  | `used_memory` vs. `maxmemory` (it stops when RAM runs out) + `connected_clients` | `INFO memory` / `INFO clients` (localhost) |
+| `postgres`   | Active connections (`pg_stat_activity`) vs. `max_connections`    | Catalog queries; Supabase is externally hosted, so this collector is enabled on the backend server's agent and queries remotely |
+| `k8s`        | Node ready status, pod phase counts, container restart spikes    | kubelet/API server (enabled on k8s nodes/masters) |
+
+**Deliberately excluded:** disk I/O read/write rates, temperature sensors, raw
+net rx/tx, DB size (Supabase dashboard covers it), Centrifugo per-node breakdown
+(total suffices), and HTTP 5xx tracking — 5xx capture lives in the backend request
+path and stays a backend concern, outside feast-watch's scope.
 
 ### Registration & Identity
 
@@ -154,5 +172,6 @@ Go binary with embedded SQLite. Single service, single data file.
 | Mother language         | Go (shared types with agent)             | Python/FastAPI, Node/TS            |
 | Storage                 | SQLite embedded in mother                | PostgreSQL, VictoriaMetrics        |
 | Config/update transport | Piggybacked on push response             | Separate control channel; separate config polling |
-| Connection metric       | Centrifugo open connections vs. max      | OS FD limits; raw TCP counts       |
+| Connection metric       | Per-service: Centrifugo clients, Dragonfly clients, Postgres connections — each vs. its max | OS FD limits; raw TCP counts       |
+| 5xx / error tracking    | Out of scope (backend request-path concern) | Ingesting 5xx into feast-watch  |
 | Agent install           | curl one-liner → systemd (DaemonSet on k8s) | Docker run command              |
