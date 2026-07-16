@@ -5,8 +5,10 @@
 
 ## Purpose
 
-feast-watch is an internal server-monitoring system. Lightweight agents run on every
-server and push metrics to a central collector ("mother"). The mother stores rolled-up
+feast-watch is an internal server-monitoring system — a separate codebase from the
+feast backend, with the mother running on its own dedicated server (not embedded in
+backend code or hosts). Lightweight agents run on every server and push metrics to
+the central collector ("mother"). The mother stores rolled-up
 metrics and serves summaries to the existing feast admin panel **through the feast
 backend only** — feast-watch is never exposed to the public internet, and the frontend
 never talks to the mother directly.
