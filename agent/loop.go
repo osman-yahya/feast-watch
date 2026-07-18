@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -76,6 +77,8 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 	}
 
 	l.pushed = true
+	// Empty collectors response means "keep current" by design; mother omits the field
+	// when it has no changes to push, to reduce payload size.
 	if len(resp.Collectors) > 0 {
 		l.enabled = resp.Collectors
 	}
@@ -90,7 +93,9 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 func (l *Loop) Run(ctx context.Context, onDesiredVersion func(string)) {
 	for {
 		resp, err := l.PushOnce(ctx)
-		if err == nil && resp.DesiredVersion != "" && resp.DesiredVersion != version.Version {
+		if err != nil {
+			slog.Error("push failed", "err", err)
+		} else if resp.DesiredVersion != "" && resp.DesiredVersion != version.Version {
 			onDesiredVersion(resp.DesiredVersion)
 		}
 		select {
