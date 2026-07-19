@@ -1,0 +1,69 @@
+package store
+
+import "strconv"
+
+// Settings are the panel-configurable knobs (spec: "Configurable from the panel").
+type Settings struct {
+	Interval               int    `json:"interval"`
+	HeartbeatMissThreshold int    `json:"heartbeat_miss_threshold"`
+	RetentionRawHours      int    `json:"retention_raw_hours"`
+	Retention1mDays        int    `json:"retention_1m_days"`
+	Retention1hDays        int    `json:"retention_1h_days"`
+	DesiredVersion         string `json:"desired_version"`
+}
+
+var defaultSettings = Settings{
+	Interval: 10, HeartbeatMissThreshold: 3,
+	RetentionRawHours: 48, Retention1mDays: 15, Retention1hDays: 75,
+}
+
+func (s *Store) GetSettings() (Settings, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return Settings{}, err
+	}
+	defer rows.Close()
+
+	out := defaultSettings
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return Settings{}, err
+		}
+		n, _ := strconv.Atoi(v)
+		switch k {
+		case "interval":
+			out.Interval = n
+		case "heartbeat_miss_threshold":
+			out.HeartbeatMissThreshold = n
+		case "retention_raw_hours":
+			out.RetentionRawHours = n
+		case "retention_1m_days":
+			out.Retention1mDays = n
+		case "retention_1h_days":
+			out.Retention1hDays = n
+		case "desired_version":
+			out.DesiredVersion = v
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveSettings(in Settings) error {
+	pairs := map[string]string{
+		"interval":                 strconv.Itoa(in.Interval),
+		"heartbeat_miss_threshold": strconv.Itoa(in.HeartbeatMissThreshold),
+		"retention_raw_hours":      strconv.Itoa(in.RetentionRawHours),
+		"retention_1m_days":        strconv.Itoa(in.Retention1mDays),
+		"retention_1h_days":        strconv.Itoa(in.Retention1hDays),
+		"desired_version":          in.DesiredVersion,
+	}
+	for k, v := range pairs {
+		if _, err := s.db.Exec(
+			`INSERT INTO settings (key, value) VALUES (?,?)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
