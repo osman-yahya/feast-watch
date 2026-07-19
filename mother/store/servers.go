@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -59,7 +60,9 @@ func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 	if err != nil {
 		return Server{}, err
 	}
-	json.Unmarshal([]byte(cols), &srv.Collectors)
+	if err := json.Unmarshal([]byte(cols), &srv.Collectors); err != nil {
+		return Server{}, fmt.Errorf("decode collectors for server %d: %w", srv.ID, err)
+	}
 	return srv, nil
 }
 
@@ -105,10 +108,17 @@ func (s *Store) SetCollectors(id int64, collectors []string) error {
 }
 
 func (s *Store) DeleteServer(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM servers WHERE id = ?`, id)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`DELETE FROM samples WHERE server_id = ?`, id)
-	return err
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM servers WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM samples WHERE server_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
