@@ -43,9 +43,9 @@ func TestRollupIsPerServerNotAverage(t *testing.T) {
 func TestRollup1hFrom1m(t *testing.T) {
 	s := open(t)
 	a, _ := s.AddServer("a")
-	base := int64(1700000000) - 1700000000%3600 // hour-aligned
-	seed(t, s, a.ID, "cpu.usage", base, []float64{10, 20})       // minute 1
-	seed(t, s, a.ID, "cpu.usage", base+60, []float64{40, 50})    // minute 2
+	base := int64(1700000000) - 1700000000%3600               // hour-aligned
+	seed(t, s, a.ID, "cpu.usage", base, []float64{10, 20})    // minute 1
+	seed(t, s, a.ID, "cpu.usage", base+60, []float64{40, 50}) // minute 2
 	if err := s.RollupSince(base); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,28 @@ func TestRetentionDeletesOldTiers(t *testing.T) {
 	s.db.QueryRow(`SELECT COUNT(*) FROM samples`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("raw retention: %d rows left", n)
+	}
+}
+
+func TestRollupSinceMidWindowDoesNotCorrupt(t *testing.T) {
+	s := open(t)
+	a, _ := s.AddServer("a")
+	base := int64(1700000000) - 1700000000%3600                // hour-aligned
+	seed(t, s, a.ID, "cpu.usage", base, []float64{10, 20, 30}) // one minute window, avg 20
+	if err := s.RollupSince(base); err != nil {
+		t.Fatal(err)
+	}
+	// re-run with a mid-window since (base+15 cuts the first minute window)
+	if err := s.RollupSince(base + 15); err != nil {
+		t.Fatal(err)
+	}
+	var avg float64
+	var cnt int
+	if err := s.db.QueryRow(`SELECT avg, cnt FROM rollup_1m WHERE server_id=? AND metric='cpu.usage'`, a.ID).Scan(&avg, &cnt); err != nil {
+		t.Fatal(err)
+	}
+	if avg != 20 || cnt != 3 {
+		t.Fatalf("mid-window RollupSince corrupted the rollup: avg=%v cnt=%d", avg, cnt)
 	}
 }
 

@@ -23,6 +23,13 @@ func (s *Store) InsertSamples(serverID int64, ts int64, samples map[string]float
 // RollupSince recomputes rollups for windows >= since. REPLACE makes it
 // idempotent; grouping is per (server, metric) — never across servers.
 func (s *Store) RollupSince(since int64) error {
+	// Align since DOWN to the hour boundary. since is typically an unaligned
+	// "now - lookback" value; if used as a raw lower bound it can fall
+	// mid-window, so GROUP BY only sees the post-since subset of a window's
+	// samples and INSERT OR REPLACE overwrites a previously-correct rollup
+	// row with an incomplete one. Hour alignment covers both the 1m and 1h
+	// window grids, so no window is ever partially included.
+	since = (since / 3600) * 3600
 	if _, err := s.db.Exec(`
 		INSERT OR REPLACE INTO rollup_1m (server_id, metric, window_start, min, max, avg, cnt)
 		SELECT server_id, metric, (ts/60)*60, MIN(value), MAX(value), AVG(value), COUNT(*)
