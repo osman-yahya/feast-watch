@@ -3,6 +3,8 @@
 package api
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,16 +36,21 @@ func (a *API) Handler() http.Handler {
 }
 
 // bearerServer authenticates an agent push by its per-server token.
-func (a *API) bearerServer(r *http.Request) (store.Server, bool) {
+// Returns (server, 0) on success, (empty, 401) if token not found, or (empty, 500) on storage error.
+func (a *API) bearerServer(r *http.Request) (store.Server, int) {
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || tok == "" {
-		return store.Server{}, false
+		return store.Server{}, http.StatusUnauthorized
 	}
 	srv, err := a.st.ServerByToken(tok)
 	if err != nil {
-		return store.Server{}, false
+		if errors.Is(err, store.ErrNotFound) {
+			return store.Server{}, http.StatusUnauthorized
+		}
+		slog.Error("token lookup failed", "err", err)
+		return store.Server{}, http.StatusInternalServerError
 	}
-	return srv, true
+	return srv, 0
 }
 
 // requireAPIKey guards the backend-facing admin surface.

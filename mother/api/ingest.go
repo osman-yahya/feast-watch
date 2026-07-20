@@ -15,9 +15,13 @@ const (
 )
 
 func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
-	srv, ok := a.bearerServer(r)
-	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	srv, status := a.bearerServer(r)
+	if status != 0 {
+		msg := `{"error":"unauthorized"}`
+		if status == http.StatusInternalServerError {
+			msg = `{"error":"storage failure"}`
+		}
+		http.Error(w, msg, status)
 		return
 	}
 	var req protocol.IngestRequest
@@ -48,6 +52,7 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	settings, err := a.st.GetSettings()
 	if err != nil {
+		slog.Error("get settings", "err", err)
 		http.Error(w, `{"error":"storage failure"}`, http.StatusInternalServerError)
 		return
 	}
