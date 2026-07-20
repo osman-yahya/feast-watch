@@ -7,7 +7,11 @@ import (
 
 // maxChartPoints bounds every chart response — the frontend can never receive
 // more, regardless of range. Raw `samples` are NEVER queried here (spec).
-const maxChartPoints = 500
+const (
+	maxChartPoints      = 500
+	minChartInterval    = 60
+	hourlyTierThreshold = 3600
+)
 
 type ChartPoint struct {
 	TS  int64   `json:"ts"`
@@ -31,8 +35,8 @@ func (a *API) handleChart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, nil, "server_id, metric, from, to, interval are required")
 		return
 	}
-	if interval < 60 {
-		interval = 60
+	if interval < minChartInterval {
+		interval = minChartInterval
 	}
 	if (to-from)/interval > maxChartPoints {
 		writeJSON(w, http.StatusBadRequest, nil, "range/interval exceeds max points; increase interval")
@@ -41,7 +45,7 @@ func (a *API) handleChart(w http.ResponseWriter, r *http.Request) {
 
 	// Tier selection: sub-hour resolution comes from rollup_1m, else rollup_1h.
 	table := "rollup_1h"
-	if interval < 3600 {
+	if interval < hourlyTierThreshold {
 		table = "rollup_1m"
 	}
 
@@ -66,6 +70,10 @@ func (a *API) handleChart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+		return
 	}
 	writeJSON(w, http.StatusOK, points, "")
 }
