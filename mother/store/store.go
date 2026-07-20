@@ -69,3 +69,6 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// DB exposes the handle for read-only query composition in the api package.
+func (s *Store) DB() *sql.DB { return s.db }

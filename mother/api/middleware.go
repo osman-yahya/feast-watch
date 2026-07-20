@@ -79,5 +79,4 @@ func (a *API) allowPush(serverID int64) bool {
 	return true
 }
 
-func (a *API) registerChart(mux *http.ServeMux)   {} // replaced in Task 12
 func (a *API) registerInstall(mux *http.ServeMux) {} // replaced in Task 13
