@@ -119,3 +119,19 @@ func TestUpdateCollectorsAndDeleteHistory(t *testing.T) {
 		t.Fatalf("delete history: %d", w.Code)
 	}
 }
+
+func TestDeleteHistoryRequiresExplicitServerID(t *testing.T) {
+	a, _ := setup(t)
+	w := adminReq(t, a.Handler(), http.MethodDelete, "/api/history?from=0&to=100", "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing server_id must 400, got %d", w.Code)
+	}
+	w = adminReq(t, a.Handler(), http.MethodDelete, "/api/history?server_id=abc&from=0&to=100", "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed server_id must 400, got %d", w.Code)
+	}
+	w = adminReq(t, a.Handler(), http.MethodDelete, "/api/history?server_id=0&from=0&to=100", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit server_id=0 (all) must succeed, got %d", w.Code)
+	}
+}

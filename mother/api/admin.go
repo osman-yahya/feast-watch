@@ -153,7 +153,16 @@ func (a *API) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	serverID, _ := strconv.ParseInt(q.Get("server_id"), 10, 64)
+	serverIDStr := q.Get("server_id")
+	if serverIDStr == "" {
+		writeJSON(w, http.StatusBadRequest, nil, "server_id is required (0 = all servers)")
+		return
+	}
+	serverID, err := strconv.ParseInt(serverIDStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, nil, "server_id is required (0 = all servers)")
+		return
+	}
 	from, err1 := strconv.ParseInt(q.Get("from"), 10, 64)
 	to, err2 := strconv.ParseInt(q.Get("to"), 10, 64)
 	if err1 != nil || err2 != nil || to < from {
