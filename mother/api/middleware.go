@@ -14,17 +14,20 @@ import (
 )
 
 type API struct {
-	st        *store.Store
-	apiKey    string
-	downloads string // directory holding agent binaries + .sha256 files
+	st         *store.Store
+	apiKey     string
+	downloads  string // directory holding agent binaries + .sha256 files
+	publicAddr string // host:port agents reach the mother on, e.g. "10.0.0.1:8443"
 
 	mu       sync.Mutex
 	lastPush map[int64]time.Time // per-server rate-limit state
 }
 
 func New(st *store.Store, apiKey string, downloads string) *API {
-	return &API{st: st, apiKey: apiKey, downloads: downloads, lastPush: map[int64]time.Time{}}
+	return &API{st: st, apiKey: apiKey, downloads: downloads, publicAddr: "127.0.0.1:8443", lastPush: map[int64]time.Time{}}
 }
+
+func (a *API) SetPublicAddr(addr string) { a.publicAddr = addr }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -76,6 +79,5 @@ func (a *API) allowPush(serverID int64) bool {
 	return true
 }
 
-func (a *API) registerAdmin(mux *http.ServeMux)   {} // replaced in Task 11
 func (a *API) registerChart(mux *http.ServeMux)   {} // replaced in Task 12
 func (a *API) registerInstall(mux *http.ServeMux) {} // replaced in Task 13
