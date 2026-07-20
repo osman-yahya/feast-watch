@@ -128,5 +128,14 @@ func (s *Store) DeleteServer(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM samples WHERE server_id = ?`, id); err != nil {
 		return err
 	}
+	// servers.id is an INTEGER PRIMARY KEY without AUTOINCREMENT, so SQLite
+	// may reuse this id for a future server. Purge rollup history too, or a
+	// fresh server could inherit a deleted server's metrics.
+	if _, err := tx.Exec(`DELETE FROM rollup_1m WHERE server_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM rollup_1h WHERE server_id = ?`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }

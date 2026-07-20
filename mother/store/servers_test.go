@@ -93,3 +93,54 @@ func TestDeleteServerRevokesToken(t *testing.T) {
 		t.Fatal("deleted server's token must be rejected")
 	}
 }
+
+// TestDeleteServerPurgesRollupHistory guards against rowid reuse: the
+// servers table is an INTEGER PRIMARY KEY without AUTOINCREMENT, so SQLite
+// is free to reuse a deleted row's id for the next inserted row. If
+// DeleteServer leaves rollup_1m/rollup_1h rows behind, a brand-new server
+// that inherits the old id would appear to have historical metrics it never
+// actually reported.
+func TestDeleteServerPurgesRollupHistory(t *testing.T) {
+	s := open(t)
+	a, err := s.AddServer("server-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSamples(a.ID, 1700000000, map[string]float64{"cpu.usage": 42}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RollupSince(1700000000); err != nil {
+		t.Fatal(err)
+	}
+
+	countRollups := func(id int64) (m1, h1 int) {
+		t.Helper()
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM rollup_1m WHERE server_id = ?`, id).Scan(&m1); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM rollup_1h WHERE server_id = ?`, id).Scan(&h1); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	if m1, h1 := countRollups(a.ID); m1 == 0 || h1 == 0 {
+		t.Fatalf("setup: expected rollups for server-a, got rollup_1m=%d rollup_1h=%d", m1, h1)
+	}
+
+	if err := s.DeleteServer(a.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := s.AddServer("fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ID != a.ID {
+		t.Skipf("rowid was not reused (got %d, want %d) — cannot exercise the leak on this SQLite build", fresh.ID, a.ID)
+	}
+
+	if m1, h1 := countRollups(fresh.ID); m1 != 0 || h1 != 0 {
+		t.Fatalf("fresh server inherited deleted server's rollup history: rollup_1m=%d rollup_1h=%d", m1, h1)
+	}
+}
