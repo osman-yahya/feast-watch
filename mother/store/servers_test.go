@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestAddServerRejectsInvalidNames(t *testing.T) {
+	invalid := []string{
+		"evil; curl x | bash #",
+		"has space",
+		"a$(cmd)",
+		strings.Repeat("a", 65),
+		"",
+	}
+	for _, name := range invalid {
+		t.Run(name, func(t *testing.T) {
+			s := open(t)
+			if _, err := s.AddServer(name); !errors.Is(err, ErrInvalidName) {
+				t.Fatalf("want ErrInvalidName for %q, got %v", name, err)
+			}
+		})
+	}
+
+	valid := []string{"DB_Sunucusu", "web-1", "a.b"}
+	for _, name := range valid {
+		t.Run(name, func(t *testing.T) {
+			s := open(t)
+			if _, err := s.AddServer(name); err != nil {
+				t.Fatalf("want success for %q, got %v", name, err)
+			}
+		})
+	}
+}
+
 func open(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(":memory:")

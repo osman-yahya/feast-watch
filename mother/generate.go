@@ -5,9 +5,9 @@ package mother
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"strings"
 
+	"github.com/osman-yahya/feast-watch/mother/api"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
 
@@ -30,5 +30,5 @@ func RunGenerate(st *store.Store, publicAddr string, args []string) (string, err
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("curl -sSLk https://%s/install/%s.sh | sudo bash", publicAddr, srv.Token), nil
+	return api.InstallCommand(publicAddr, srv.Token), nil
 }

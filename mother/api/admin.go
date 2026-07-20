@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -82,6 +83,10 @@ func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv, err := a.st.AddServer(in.Name)
+	if errors.Is(err, store.ErrInvalidName) {
+		writeJSON(w, http.StatusBadRequest, nil, err.Error())
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusConflict, nil, "server name already exists")
 		return
@@ -176,7 +181,13 @@ func (a *API) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nil, "")
 }
 
+// InstallCommand renders the one-liner install command shared by the panel,
+// the admin API, and the `feast-watch generate` CLI (mother/generate.go).
+func InstallCommand(publicAddr, token string) string {
+	return fmt.Sprintf("curl -sSLk https://%s/install/%s.sh | sudo bash", publicAddr, token)
+}
+
 // installCommand renders the one-liner shown by the panel and the CLI.
 func (a *API) installCommand(token string) string {
-	return fmt.Sprintf("curl -sSLk https://%s/install/%s.sh | sudo bash", a.publicAddr, token)
+	return InstallCommand(a.publicAddr, token)
 }

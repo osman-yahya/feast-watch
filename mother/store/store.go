@@ -10,6 +10,11 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrInvalidName is returned by AddServer when the server name does not
+// match validName (see servers.go). Names are rendered raw into the
+// install shell script, so charset validation is enforced at this boundary.
+var ErrInvalidName = errors.New("invalid server name: allowed [A-Za-z0-9._-], max 64 chars")
+
 type Store struct {
 	db *sql.DB
 }

@@ -55,6 +55,14 @@ func TestAddServerReturnsInstallCommand(t *testing.T) {
 	}
 }
 
+func TestAddServerRejectsInvalidNameWith400(t *testing.T) {
+	a, _ := setup(t)
+	w := adminReq(t, a.Handler(), http.MethodPost, "/api/servers", `{"name":"evil; x"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body)
+	}
+}
+
 func TestServerStatusPendingOnlineDown(t *testing.T) {
 	a, st := setup(t)
 	st.AddServer("never-pushed")

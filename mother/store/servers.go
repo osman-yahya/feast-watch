@@ -7,10 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
 var DefaultCollectors = []string{"cpu", "memory", "uptime", "disk"}
+
+// validName restricts server names to a charset safe for direct interpolation
+// into the generated install shell script (see install.sh.tmpl).
+var validName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 type Server struct {
 	ID           int64
@@ -32,6 +37,9 @@ func newToken() string {
 }
 
 func (s *Store) AddServer(name string) (Server, error) {
+	if !validName.MatchString(name) {
+		return Server{}, ErrInvalidName
+	}
 	srv := Server{
 		Name: name, Token: newToken(),
 		Collectors: DefaultCollectors, CreatedAt: time.Now().Unix(),
