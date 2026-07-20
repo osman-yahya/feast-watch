@@ -8,16 +8,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func updateServer(t *testing.T, binary []byte, sum string) *httptest.Server {
 	t.Helper()
+	versionArch := "/download/agent/v1.3.0-" + runtime.GOARCH
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/download/agent/v1.3.0":
+		case versionArch:
 			w.Write(binary)
-		case "/download/agent/v1.3.0.sha256":
+		case versionArch + ".sha256":
 			fmt.Fprintln(w, sum)
 		default:
 			http.NotFound(w, r)

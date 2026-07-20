@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -53,11 +54,16 @@ func selfUpdate(cfg Config, desiredVersion, target string, exit func(int)) error
 		return data, nil
 	}
 
-	binary, err := fetch(binaryPath+desiredVersion, maxBinarySize)
+	// Mirror the install script's arch-aware download (see install.sh.tmpl,
+	// which fetches "latest-$ARCH"): a version alone is ambiguous once the
+	// mother serves binaries for more than one architecture.
+	versionArch := desiredVersion + "-" + runtime.GOARCH
+
+	binary, err := fetch(binaryPath+versionArch, maxBinarySize)
 	if err != nil {
 		return err
 	}
-	sumRaw, err := fetch(checksumPath+desiredVersion+".sha256", maxChecksumSize)
+	sumRaw, err := fetch(checksumPath+versionArch+".sha256", maxChecksumSize)
 	if err != nil {
 		return err
 	}
@@ -65,7 +71,7 @@ func selfUpdate(cfg Config, desiredVersion, target string, exit func(int)) error
 
 	h := sha256.Sum256(binary)
 	if hex.EncodeToString(h[:]) != wantSum {
-		return fmt.Errorf("checksum mismatch for %s: refusing update", desiredVersion)
+		return fmt.Errorf("checksum mismatch for %s: refusing update", versionArch)
 	}
 
 	tmp := target + ".new"
