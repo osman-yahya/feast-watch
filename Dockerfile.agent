@@ -1,0 +1,8 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/feast-watch-agent ./agent/cmd/feast-watch-agent
+
+FROM alpine:3.20
+COPY --from=build /out/feast-watch-agent /usr/local/bin/feast-watch-agent
+ENTRYPOINT ["feast-watch-agent", "-config", "/etc/feast-watch/agent.conf"]

@@ -1,0 +1,8 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/feast-watch ./mother/cmd/feast-watch
+
+FROM alpine:3.20
+COPY --from=build /out/feast-watch /usr/local/bin/feast-watch
+ENTRYPOINT ["feast-watch"]

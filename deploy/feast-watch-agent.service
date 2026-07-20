@@ -1,0 +1,11 @@
+[Unit]
+Description=feast-watch agent
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/feast-watch-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+services:
+  mother:
+    build: { context: ., dockerfile: Dockerfile.mother }
+    environment:
+      FW_DB_PATH: /data/mother.db
+      FW_LISTEN: ":8443"
+      FW_PUBLIC_ADDR: "mother:8443"
+      FW_API_KEY: dev-api-key
+      FW_DOWNLOADS_DIR: /data/downloads
+    volumes: [ "mother-data:/data" ]
+    ports: [ "8443:8443" ]
+
+  agent-1:
+    build: { context: ., dockerfile: Dockerfile.agent }
+    depends_on: [ mother ]
+    volumes: [ "./e2e/agent-1.conf:/etc/feast-watch/agent.conf:ro" ]
+
+  agent-2:
+    build: { context: ., dockerfile: Dockerfile.agent }
+    depends_on: [ mother ]
+    volumes: [ "./e2e/agent-2.conf:/etc/feast-watch/agent.conf:ro" ]
+
+volumes:
+  mother-data:

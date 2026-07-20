@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: feast-watch-agent
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels: { app: feast-watch-agent }
+  template:
+    metadata:
+      labels: { app: feast-watch-agent }
+    spec:
+      hostPID: true
+      containers:
+        - name: agent
+          image: feast-watch-agent:latest # updates via image tag, not self-update
+          args: ["-config", "/etc/feast-watch/agent.conf"]
+          volumeMounts:
+            - { name: proc, mountPath: /host/proc, readOnly: true }
+            - { name: conf, mountPath: /etc/feast-watch, readOnly: true }
+          resources:
+            limits: { memory: 64Mi, cpu: 100m }
+      volumes:
+        - name: proc
+          hostPath: { path: /proc }
+        - name: conf
+          secret: { secretName: feast-watch-agent-conf }
