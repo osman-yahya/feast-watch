@@ -78,5 +78,3 @@ func (a *API) allowPush(serverID int64) bool {
 	a.lastPush[serverID] = now
 	return true
 }
-
-func (a *API) registerInstall(mux *http.ServeMux) {} // replaced in Task 13
