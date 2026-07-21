@@ -60,7 +60,7 @@ func (a *API) bearerServer(r *http.Request) (store.Server, int) {
 func (a *API) requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-Key") != a.apiKey || a.apiKey == "" {
-			http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
+			writeJSON(w, http.StatusUnauthorized, nil, "invalid api key")
 			return
 		}
 		next(w, r)

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
 
@@ -46,10 +45,18 @@ func TestAddServerReturnsInstallCommand(t *testing.T) {
 	var env envelope
 	json.Unmarshal(w.Body.Bytes(), &env)
 	var data struct {
-		Server         store.Server `json:"server"`
-		InstallCommand string       `json:"install_command"`
+		Server struct {
+			ID         int64    `json:"id"`
+			Name       string   `json:"name"`
+			Token      string   `json:"token"`
+			Collectors []string `json:"collectors"`
+		} `json:"server"`
+		InstallCommand string `json:"install_command"`
 	}
 	json.Unmarshal(env.Data, &data)
+	if data.Server.Token == "" || data.Server.Name != "DB_Sunucusu" {
+		t.Fatalf("server payload must use lowercase keys: %s", env.Data)
+	}
 	if !strings.Contains(data.InstallCommand, "/install/"+data.Server.Token+".sh") {
 		t.Fatalf("install command: %q", data.InstallCommand)
 	}

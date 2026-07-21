@@ -13,8 +13,8 @@ docker compose up -d --build mother
 sleep 2
 
 echo "-> add two servers via admin API"
-TOKEN1=$(curl -sf -H "$KEY" -X POST "$API/api/servers" -d '{"name":"e2e-1"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["server"]["Token"])')
-TOKEN2=$(curl -sf -H "$KEY" -X POST "$API/api/servers" -d '{"name":"e2e-2"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["server"]["Token"])')
+TOKEN1=$(curl -sf -H "$KEY" -X POST "$API/api/servers" -d '{"name":"e2e-1"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["server"]["token"])')
+TOKEN2=$(curl -sf -H "$KEY" -X POST "$API/api/servers" -d '{"name":"e2e-2"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["server"]["token"])')
 
 mkdir -p e2e
 printf 'MOTHER_URL=http://mother:8443\nTOKEN=%s\nSERVER_NAME=e2e-1\n' "$TOKEN1" > e2e/agent-1.conf

@@ -91,8 +91,16 @@ func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, nil, "server name already exists")
 		return
 	}
+	// Explicit lowercase keys — must match the casing of GET /api/servers so
+	// consumers see one convention for "a server" across the surface.
+	created := struct {
+		ID         int64    `json:"id"`
+		Name       string   `json:"name"`
+		Token      string   `json:"token"`
+		Collectors []string `json:"collectors"`
+	}{ID: srv.ID, Name: srv.Name, Token: srv.Token, Collectors: srv.Collectors}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"server":          srv,
+		"server":          created,
 		"install_command": a.installCommand(srv.Token),
 	}, "")
 }
