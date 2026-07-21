@@ -150,3 +150,12 @@ func TestDeleteHistoryRequiresExplicitServerID(t *testing.T) {
 		t.Fatalf("explicit server_id=0 (all) must succeed, got %d", w.Code)
 	}
 }
+
+func TestSettingsRejectSubRateLimitInterval(t *testing.T) {
+	a, _ := setup(t)
+	w := adminReq(t, a.Handler(), http.MethodPut, "/api/settings",
+		`{"interval":1,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75,"desired_version":""}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("interval=1 must 400 (below 2s rate-limit gap), got %d", w.Code)
+	}
+}

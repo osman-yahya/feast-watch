@@ -153,8 +153,14 @@ func (a *API) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, nil, "malformed settings")
 		return
 	}
-	if in.Interval < 1 || in.HeartbeatMissThreshold < 1 {
-		writeJSON(w, http.StatusBadRequest, nil, "interval and threshold must be >= 1")
+	// Interval floor of 2s matches the ingest rate limit (minPushGap): a 1s
+	// interval would make every other push a 429 and flap server status.
+	if in.Interval < 2 {
+		writeJSON(w, http.StatusBadRequest, nil, "interval must be >= 2 seconds")
+		return
+	}
+	if in.HeartbeatMissThreshold < 1 {
+		writeJSON(w, http.StatusBadRequest, nil, "heartbeat threshold must be >= 1")
 		return
 	}
 	if err := a.st.SaveSettings(in); err != nil {
