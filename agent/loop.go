@@ -29,9 +29,15 @@ type Loop struct {
 }
 
 func NewLoop(cfg Config, reg *collectors.Registry) *Loop {
+	return NewLoopWithClient(cfg, reg, &http.Client{Timeout: 5 * time.Second})
+}
+
+// NewLoopWithClient lets the caller supply a client with custom TLS trust
+// (built via Config.HTTPClient) — required when the mother uses an internal CA.
+func NewLoopWithClient(cfg Config, reg *collectors.Registry, client *http.Client) *Loop {
 	return &Loop{
 		cfg: cfg, reg: reg,
-		client:   &http.Client{Timeout: 5 * time.Second},
+		client:   client,
 		enabled:  []string{"cpu", "memory", "uptime", "disk"},
 		interval: defaultInterval,
 	}

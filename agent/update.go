@@ -25,16 +25,20 @@ const (
 // SelfUpdate downloads desiredVersion from the mother, verifies its SHA-256,
 // atomically replaces the running executable and exits 0 — systemd restarts us.
 func SelfUpdate(cfg Config, desiredVersion string, exit func(int)) error {
+	return SelfUpdateWithClient(cfg, desiredVersion, exit, &http.Client{Timeout: 60 * time.Second})
+}
+
+// SelfUpdateWithClient is SelfUpdate with a caller-supplied client, so the
+// download honors the same TLS trust configuration as the push loop.
+func SelfUpdateWithClient(cfg Config, desiredVersion string, exit func(int), client *http.Client) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return selfUpdate(cfg, desiredVersion, self, exit)
+	return selfUpdate(cfg, desiredVersion, self, exit, client)
 }
 
-func selfUpdate(cfg Config, desiredVersion, target string, exit func(int)) error {
-	client := &http.Client{Timeout: 60 * time.Second}
-
+func selfUpdate(cfg Config, desiredVersion, target string, exit func(int), client *http.Client) error {
 	fetch := func(path string, limit int64) ([]byte, error) {
 		resp, err := client.Get(cfg.MotherURL + path)
 		if err != nil {

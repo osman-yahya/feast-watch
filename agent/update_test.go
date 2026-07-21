@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func updateServer(t *testing.T, binary []byte, sum string) *httptest.Server {
@@ -37,7 +38,7 @@ func TestSelfUpdateReplacesBinaryAndExits(t *testing.T) {
 	os.WriteFile(target, []byte("OLD"), 0o755)
 
 	exitCode := -1
-	err := selfUpdate(Config{MotherURL: srv.URL}, "v1.3.0", target, func(c int) { exitCode = c })
+	err := selfUpdate(Config{MotherURL: srv.URL}, "v1.3.0", target, func(c int) { exitCode = c }, &http.Client{Timeout: 60 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestSelfUpdateRejectsBadChecksum(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")
 	os.WriteFile(target, []byte("OLD"), 0o755)
 
-	err := selfUpdate(Config{MotherURL: srv.URL}, "v1.3.0", target, func(int) { t.Fatal("must not exit") })
+	err := selfUpdate(Config{MotherURL: srv.URL}, "v1.3.0", target, func(int) { t.Fatal("must not exit") }, &http.Client{Timeout: 60 * time.Second})
 	if err == nil {
 		t.Fatal("checksum mismatch must fail")
 	}

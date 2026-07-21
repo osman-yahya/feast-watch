@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/osman-yahya/feast-watch/agent"
 	"github.com/osman-yahya/feast-watch/agent/collectors"
@@ -40,10 +41,21 @@ func main() {
 		reg.Register(collectors.NewK8s(cfg.K8sAPIURL, cfg.K8sToken))
 	}
 
-	loop := agent.NewLoop(cfg, reg)
+	pushClient, err := cfg.HTTPClient(5 * time.Second)
+	if err != nil {
+		slog.Error("tls config", "err", err)
+		os.Exit(1)
+	}
+	updateClient, err := cfg.HTTPClient(60 * time.Second)
+	if err != nil {
+		slog.Error("tls config", "err", err)
+		os.Exit(1)
+	}
+
+	loop := agent.NewLoopWithClient(cfg, reg, pushClient)
 	loop.Run(context.Background(), func(desired string) {
 		slog.Info("self-update requested", "desired", desired)
-		if err := agent.SelfUpdate(cfg, desired, os.Exit); err != nil {
+		if err := agent.SelfUpdateWithClient(cfg, desired, os.Exit, updateClient); err != nil {
 			slog.Error("self-update failed", "err", err)
 		}
 	})
