@@ -29,9 +29,17 @@ func main() {
 
 	publicAddr := env("FW_PUBLIC_ADDR", "127.0.0.1:8443")
 
+	// The scheme agents are told to use must match what this process actually
+	// serves below, so it is derived from the TLS cert rather than assumed.
+	cert, key := os.Getenv("FW_TLS_CERT"), os.Getenv("FW_TLS_KEY")
+	scheme := "http"
+	if cert != "" {
+		scheme = "https"
+	}
+
 	// `feast-watch generate --name=X` — CLI alternative to the panel's Add Server.
 	if len(os.Args) > 1 && os.Args[1] == "generate" {
-		out, err := mother.RunGenerate(st, publicAddr, os.Args[2:])
+		out, err := mother.RunGenerate(st, scheme, publicAddr, os.Args[2:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -47,6 +55,10 @@ func main() {
 	}
 	a := api.New(st, apiKey, env("FW_DOWNLOADS_DIR", "/var/lib/feast-watch/downloads"))
 	a.SetPublicAddr(publicAddr)
+	a.SetScheme(scheme)
+	// Opt-in: with a self-signed cert the generated install script must tell
+	// the agent to skip verification, otherwise every push fails on trust.
+	a.SetAgentTLSSkipVerify(os.Getenv("FW_AGENT_TLS_SKIP_VERIFY") == "true")
 
 	go func() { // rollup every 30s over the last 10 minutes (idempotent REPLACE)
 		for range time.Tick(30 * time.Second) {
@@ -68,7 +80,6 @@ func main() {
 	}()
 
 	listen := env("FW_LISTEN", ":8443")
-	cert, key := os.Getenv("FW_TLS_CERT"), os.Getenv("FW_TLS_KEY")
 	slog.Info("mother listening", "addr", listen, "tls", cert != "")
 	if cert != "" {
 		err = http.ListenAndServeTLS(listen, cert, key, a.Handler())

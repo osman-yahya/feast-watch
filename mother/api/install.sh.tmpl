@@ -23,7 +23,8 @@ cat > /etc/feast-watch/agent.conf <<EOF
 MOTHER_URL=$MOTHER_URL
 TOKEN=$TOKEN
 SERVER_NAME=$SERVER_NAME
-EOF
+{{if .TLSSkipVerify}}TLS_SKIP_VERIFY=true
+{{end}}EOF
 chmod 0600 /etc/feast-watch/agent.conf
 
 echo "-> installing systemd service"

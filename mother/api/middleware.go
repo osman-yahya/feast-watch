@@ -18,16 +18,43 @@ type API struct {
 	apiKey     string
 	downloads  string // directory holding agent binaries + .sha256 files
 	publicAddr string // host:port agents reach the mother on, e.g. "10.0.0.1:8443"
+	// scheme is the URL scheme the mother actually serves ("https" when it
+	// holds a TLS certificate, "http" otherwise). Agents are told to reach it
+	// over this scheme; hardcoding https would hand a plain-HTTP mother an
+	// install script whose every push fails.
+	scheme string
+	// agentTLSSkipVerify makes the generated install script write
+	// TLS_SKIP_VERIFY=true into agent.conf. Required when the mother presents
+	// a self-signed certificate: install.sh is the only channel that reaches
+	// the agent's TLS configuration, and a CA file path cannot be transferred.
+	agentTLSSkipVerify bool
 
 	mu       sync.Mutex
 	lastPush map[int64]time.Time // per-server rate-limit state
 }
 
 func New(st *store.Store, apiKey string, downloads string) *API {
-	return &API{st: st, apiKey: apiKey, downloads: downloads, publicAddr: "127.0.0.1:8443", lastPush: map[int64]time.Time{}}
+	return &API{
+		st: st, apiKey: apiKey, downloads: downloads,
+		publicAddr: "127.0.0.1:8443", scheme: "https",
+		lastPush: map[int64]time.Time{},
+	}
 }
 
 func (a *API) SetPublicAddr(addr string) { a.publicAddr = addr }
+
+// SetScheme sets the URL scheme agents use to reach the mother. Anything other
+// than "http" is treated as "https" so a misconfiguration can never downgrade
+// a TLS-serving mother to plaintext.
+func (a *API) SetScheme(scheme string) {
+	if scheme == "http" {
+		a.scheme = "http"
+		return
+	}
+	a.scheme = "https"
+}
+
+func (a *API) SetAgentTLSSkipVerify(skip bool) { a.agentTLSSkipVerify = skip }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()

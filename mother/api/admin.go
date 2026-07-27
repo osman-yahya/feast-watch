@@ -197,11 +197,13 @@ func (a *API) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {
 
 // InstallCommand renders the one-liner install command shared by the panel,
 // the admin API, and the `feast-watch generate` CLI (mother/generate.go).
-func InstallCommand(publicAddr, token string) string {
-	return fmt.Sprintf("curl -sSLk https://%s/install/%s.sh | sudo bash", publicAddr, token)
+// scheme must match what the mother actually serves, so the command the
+// operator copies reaches the same endpoint the installed agent will use.
+func InstallCommand(scheme, publicAddr, token string) string {
+	return fmt.Sprintf("curl -sSLk %s://%s/install/%s.sh | sudo bash", scheme, publicAddr, token)
 }
 
 // installCommand renders the one-liner shown by the panel and the CLI.
 func (a *API) installCommand(token string) string {
-	return InstallCommand(a.publicAddr, token)
+	return InstallCommand(a.scheme, a.publicAddr, token)
 }
