@@ -5,6 +5,7 @@ package collectors
 import (
 	"context"
 	"log/slog"
+	"sort"
 )
 
 type Sample struct {
@@ -27,6 +28,20 @@ func NewRegistry() *Registry {
 
 func (r *Registry) Register(c Collector) {
 	r.byName[c.Name()] = c
+}
+
+// Names lists the registered collectors, sorted. This is the agent's
+// capability set: service collectors register only when agent.conf configures
+// them, so this is the only place that knows a host cannot run, say, the
+// dragonfly collector. Sorted because the result is persisted and compared —
+// map iteration order must not make an unchanged agent look changed.
+func (r *Registry) Names() []string {
+	names := make([]string, 0, len(r.byName))
+	for name := range r.byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // CollectEnabled runs exactly the enabled collectors; a failing collector is

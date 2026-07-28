@@ -144,3 +144,80 @@ func TestDeleteServerPurgesRollupHistory(t *testing.T) {
 		t.Fatalf("fresh server inherited deleted server's rollup history: rollup_1m=%d rollup_1h=%d", m1, h1)
 	}
 }
+
+func TestCapabilitiesDefaultEmptyUntilAgentReports(t *testing.T) {
+	st, _ := Open(":memory:")
+	t.Cleanup(func() { st.Close() })
+	srv, _ := st.AddServer("db-1")
+
+	got, err := st.ServerByToken(srv.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Empty means "the agent has not told us yet", which must stay
+	// distinguishable from "the agent supports nothing" — the panel shows no
+	// warnings until it hears from the agent.
+	if len(got.Capabilities) != 0 {
+		t.Fatalf("new server capabilities = %v, want empty", got.Capabilities)
+	}
+}
+
+func TestSetCapabilitiesPersists(t *testing.T) {
+	st, _ := Open(":memory:")
+	t.Cleanup(func() { st.Close() })
+	srv, _ := st.AddServer("db-1")
+
+	if err := st.SetCapabilities(srv.ID, []string{"cpu", "memory", "postgres"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ServerByToken(srv.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Capabilities) != 3 || got.Capabilities[2] != "postgres" {
+		t.Fatalf("capabilities = %v", got.Capabilities)
+	}
+
+	list, err := st.ListServers()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list: %v %d", err, len(list))
+	}
+	if len(list[0].Capabilities) != 3 {
+		t.Fatalf("ListServers capabilities = %v", list[0].Capabilities)
+	}
+}
+
+// The agent reports capabilities on its first push only, so a later push
+// carrying none must not erase what we already know.
+func TestSetCapabilitiesIgnoresEmptyReport(t *testing.T) {
+	st, _ := Open(":memory:")
+	t.Cleanup(func() { st.Close() })
+	srv, _ := st.AddServer("db-1")
+
+	if err := st.SetCapabilities(srv.ID, []string{"cpu", "dragonfly"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCapabilities(srv.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.ServerByToken(srv.Token)
+	if len(got.Capabilities) != 2 {
+		t.Fatalf("empty report must not wipe capabilities, got %v", got.Capabilities)
+	}
+}
+
+// A restarted agent whose agent.conf gained DRAGONFLY_ADDR must be able to
+// widen its own capability set.
+func TestSetCapabilitiesReplacesPreviousReport(t *testing.T) {
+	st, _ := Open(":memory:")
+	t.Cleanup(func() { st.Close() })
+	srv, _ := st.AddServer("db-1")
+
+	st.SetCapabilities(srv.ID, []string{"cpu"})
+	st.SetCapabilities(srv.ID, []string{"cpu", "dragonfly"})
+
+	got, _ := st.ServerByToken(srv.Token)
+	if len(got.Capabilities) != 2 || got.Capabilities[1] != "dragonfly" {
+		t.Fatalf("capabilities = %v", got.Capabilities)
+	}
+}

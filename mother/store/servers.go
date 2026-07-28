@@ -27,6 +27,11 @@ type Server struct {
 	OS           string
 	AgentVersion string
 	LastPush     int64
+	// Capabilities is the collector set the agent reported it can actually
+	// run. Empty means the agent has not reported yet — which must stay
+	// distinct from "supports nothing", since the panel only warns about
+	// unsupported collectors once it has heard from the agent.
+	Capabilities []string
 	CreatedAt    int64
 }
 
@@ -55,13 +60,13 @@ func (s *Store) AddServer(name string) (Server, error) {
 	return srv, nil
 }
 
-const serverCols = `id, name, token, collectors, hostname, ip, os, agent_version, last_push, created_at`
+const serverCols = `id, name, token, collectors, hostname, ip, os, agent_version, last_push, capabilities, created_at`
 
 func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 	var srv Server
-	var cols string
+	var cols, caps string
 	err := row.Scan(&srv.ID, &srv.Name, &srv.Token, &cols, &srv.Hostname, &srv.IP,
-		&srv.OS, &srv.AgentVersion, &srv.LastPush, &srv.CreatedAt)
+		&srv.OS, &srv.AgentVersion, &srv.LastPush, &caps, &srv.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
 	}
@@ -70,6 +75,9 @@ func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 	}
 	if err := json.Unmarshal([]byte(cols), &srv.Collectors); err != nil {
 		return Server{}, fmt.Errorf("decode collectors for server %d: %w", srv.ID, err)
+	}
+	if err := json.Unmarshal([]byte(caps), &srv.Capabilities); err != nil {
+		return Server{}, fmt.Errorf("decode capabilities for server %d: %w", srv.ID, err)
 	}
 	return srv, nil
 }
@@ -106,6 +114,22 @@ func (s *Store) TouchServer(id int64, agentVersion, hostname, ip, osName string,
 		os       = CASE WHEN ? != '' THEN ? ELSE os END
 		WHERE id = ?`,
 		agentVersion, now, hostname, hostname, ip, ip, osName, osName, id)
+	return err
+}
+
+// SetCapabilities records what the agent reported it can run. An empty report
+// is ignored rather than stored: the agent sends capabilities on its first
+// push only, so every subsequent push carries none and would otherwise erase
+// what we already learned.
+func (s *Store) SetCapabilities(id int64, capabilities []string) error {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	caps, err := json.Marshal(capabilities)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE servers SET capabilities = ? WHERE id = ?`, string(caps), id)
 	return err
 }
 

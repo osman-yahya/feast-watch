@@ -55,6 +55,9 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 		req.Hostname, _ = os.Hostname()
 		req.OS = runtime.GOOS
 		req.IP = localIP()
+		// Capabilities only change when agent.conf changes, which requires a
+		// restart — and a restart replays the first push.
+		req.Capabilities = l.reg.Names()
 	}
 
 	body, err := json.Marshal(req)

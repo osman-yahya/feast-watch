@@ -30,10 +30,14 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 }
 
 type serverView struct {
-	ID           int64    `json:"id"`
-	Name         string   `json:"name"`
-	Status       string   `json:"status"`
-	Collectors   []string `json:"collectors"`
+	ID         int64    `json:"id"`
+	Name       string   `json:"name"`
+	Status     string   `json:"status"`
+	Collectors []string `json:"collectors"`
+	// Capabilities is what the agent reported it can actually run. Empty
+	// means it has not reported yet, which consumers must treat as "unknown"
+	// rather than "supports nothing".
+	Capabilities []string `json:"capabilities"`
 	Hostname     string   `json:"hostname"`
 	IP           string   `json:"ip"`
 	OS           string   `json:"os"`
@@ -67,7 +71,8 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 	for _, s := range servers {
 		views = append(views, serverView{
 			ID: s.ID, Name: s.Name, Status: status(s, settings, now),
-			Collectors: s.Collectors, Hostname: s.Hostname, IP: s.IP, OS: s.OS,
+			Collectors: s.Collectors, Capabilities: s.Capabilities,
+			Hostname: s.Hostname, IP: s.IP, OS: s.OS,
 			AgentVersion: s.AgentVersion, LastPush: s.LastPush,
 		})
 	}

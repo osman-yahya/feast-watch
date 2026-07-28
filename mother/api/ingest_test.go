@@ -109,3 +109,46 @@ func TestIngestRateLimitsPerToken(t *testing.T) {
 		t.Fatalf("rate limit must be per token, got %d", w.Code)
 	}
 }
+
+// The agent is the only party that knows which service collectors its host is
+// configured for, so its report has to be persisted on arrival.
+func TestIngestStoresReportedCapabilities(t *testing.T) {
+	a, st := setup(t)
+	srv, _ := st.AddServer("db-1")
+
+	w := postIngest(t, a.Handler(), srv.Token, protocol.IngestRequest{
+		Server:       "db-1",
+		AgentVersion: "v1",
+		Capabilities: []string{"cpu", "memory", "postgres"},
+		Samples:      map[string]float64{"cpu.usage": 12},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+
+	got, _ := st.ServerByToken(srv.Token)
+	if len(got.Capabilities) != 3 || got.Capabilities[2] != "postgres" {
+		t.Fatalf("capabilities = %v", got.Capabilities)
+	}
+}
+
+// Capabilities ride along with the identity fields on the first push only;
+// the steady-state pushes that follow must not wipe them.
+func TestIngestKeepsCapabilitiesWhenPushOmitsThem(t *testing.T) {
+	a, st := setup(t)
+	srv, _ := st.AddServer("db-1")
+
+	postIngest(t, a.Handler(), srv.Token, protocol.IngestRequest{
+		Server: "db-1", Capabilities: []string{"cpu", "dragonfly"},
+		Samples: map[string]float64{"cpu.usage": 1},
+	})
+	// Second push carries no capabilities, as a real agent's would not.
+	postIngest(t, a.Handler(), srv.Token, protocol.IngestRequest{
+		Server: "db-1", Samples: map[string]float64{"cpu.usage": 2},
+	})
+
+	got, _ := st.ServerByToken(srv.Token)
+	if len(got.Capabilities) != 2 {
+		t.Fatalf("steady-state push erased capabilities: %v", got.Capabilities)
+	}
+}

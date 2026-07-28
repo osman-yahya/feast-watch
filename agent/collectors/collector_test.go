@@ -55,3 +55,32 @@ func TestRegistrySkipsFailingCollector(t *testing.T) {
 		t.Fatalf("expected 1 sample, got %v", got)
 	}
 }
+
+// The mother cannot know which service collectors a host is configured for —
+// only the agent does, since service collectors register conditionally on
+// agent.conf. Names() is how that capability set reaches the wire.
+func TestRegistryNamesReportsRegisteredCollectors(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&fake{name: "memory"})
+	r.Register(&fake{name: "cpu"})
+	r.Register(&fake{name: "dragonfly"})
+
+	got := r.Names()
+	want := []string{"cpu", "dragonfly", "memory"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	// Sorted: the list is persisted and compared downstream, so map iteration
+	// order must not make an unchanged agent look like it changed.
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Names() = %v, want %v (sorted)", got, want)
+		}
+	}
+}
+
+func TestRegistryNamesEmptyWhenNothingRegistered(t *testing.T) {
+	if got := NewRegistry().Names(); len(got) != 0 {
+		t.Fatalf("Names() on empty registry = %v, want empty", got)
+	}
+}

@@ -49,6 +49,11 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err := a.st.TouchServer(srv.ID, req.AgentVersion, req.Hostname, req.IP, req.OS, now); err != nil {
 		slog.Error("touch server", "server", srv.Name, "err", err)
 	}
+	// Only the first push carries capabilities; SetCapabilities ignores an
+	// empty report so the steady-state pushes that follow do not erase them.
+	if err := a.st.SetCapabilities(srv.ID, req.Capabilities); err != nil {
+		slog.Error("set capabilities", "server", srv.Name, "err", err)
+	}
 
 	settings, err := a.st.GetSettings()
 	if err != nil {

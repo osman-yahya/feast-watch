@@ -159,3 +159,48 @@ func TestSettingsRejectSubRateLimitInterval(t *testing.T) {
 		t.Fatalf("interval=1 must 400 (below 2s rate-limit gap), got %d", w.Code)
 	}
 }
+
+// The panel warns about collectors the agent cannot run, so the capability
+// set has to reach it through the server list.
+func TestListServersExposesCapabilities(t *testing.T) {
+	a, st := setup(t)
+	srv, _ := st.AddServer("db-1")
+	if err := st.SetCapabilities(srv.ID, []string{"cpu", "memory"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := adminReq(t, a.Handler(), http.MethodGet, "/api/servers", "")
+
+	var body struct {
+		Data []struct {
+			Capabilities []string `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data) != 1 || len(body.Data[0].Capabilities) != 2 {
+		t.Fatalf("capabilities not exposed: %s", w.Body.String())
+	}
+}
+
+// Enabling a collector the agent cannot run is allowed on purpose: an
+// operator may prepare the selection before configuring the agent. The panel
+// warns; the mother does not block.
+func TestSetCollectorsAcceptsCollectorOutsideCapabilities(t *testing.T) {
+	a, st := setup(t)
+	srv, _ := st.AddServer("db-1")
+	st.SetCapabilities(srv.ID, []string{"cpu", "memory"})
+
+	w := adminReq(t, a.Handler(), http.MethodPut,
+		fmt.Sprintf("/api/servers/%d/collectors", srv.ID),
+		`{"collectors":["cpu","dragonfly"]}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := st.ServerByToken(srv.Token)
+	if len(got.Collectors) != 2 || got.Collectors[1] != "dragonfly" {
+		t.Fatalf("collectors = %v", got.Collectors)
+	}
+}

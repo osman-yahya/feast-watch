@@ -4,6 +4,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS servers (
   os            TEXT NOT NULL DEFAULT '',
   agent_version TEXT NOT NULL DEFAULT '',
   last_push     INTEGER NOT NULL DEFAULT 0,
+  capabilities  TEXT NOT NULL DEFAULT '[]',
   created_at    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS samples (
@@ -70,7 +73,30 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate applies column additions to databases created before those columns
+// existed. The schema above uses CREATE TABLE IF NOT EXISTS, which leaves an
+// existing table untouched, so a new column needs an explicit ALTER.
+//
+// Each statement is expected to fail with "duplicate column name" on an
+// already-migrated database; that specific error is the success case and is
+// swallowed. Anything else is a real failure and aborts startup.
+func migrate(db *sql.DB) error {
+	statements := []string{
+		`ALTER TABLE servers ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate %q: %w", stmt, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

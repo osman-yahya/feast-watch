@@ -82,3 +82,38 @@ func TestSecondPushOmitsIdentity(t *testing.T) {
 		t.Fatal("identity fields belong to the first push only")
 	}
 }
+
+// Capabilities travel with the identity fields: they change only when
+// agent.conf changes, which requires a restart, and a restart replays the
+// first push. Sending them every cycle would be pure overhead.
+func TestFirstPushReportsCapabilities(t *testing.T) {
+	var reqs []protocol.IngestRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.IngestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		reqs = append(reqs, req)
+		json.NewEncoder(w).Encode(protocol.IngestResponse{Interval: 10})
+	}))
+	defer srv.Close()
+
+	reg := collectors.NewRegistry()
+	reg.Register(&stub{name: "cpu", key: "cpu.usage", val: 1})
+	reg.Register(&stub{name: "postgres", key: "postgres.conns", val: 5})
+
+	l := NewLoop(Config{MotherURL: srv.URL, Token: "tk_abc", ServerName: "s1"}, reg)
+	if _, err := l.PushOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.PushOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reqs[0].Capabilities; len(got) != 2 || got[0] != "cpu" || got[1] != "postgres" {
+		t.Fatalf("first push capabilities = %v, want [cpu postgres]", got)
+	}
+	if got := reqs[1].Capabilities; len(got) != 0 {
+		t.Fatalf("second push must omit capabilities, got %v", got)
+	}
+}
