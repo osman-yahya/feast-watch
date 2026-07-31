@@ -9,6 +9,12 @@ services:
       FW_DOWNLOADS_DIR: /data/downloads
     volumes: [ "mother-data:/data" ]
     ports: [ "8443:8443" ]
+    # Also joined to the shared `feast-watch` network so the feast backend's
+    # devcontainer can reach mother as http://mother:8443. The published port
+    # is not usable from another container on macOS: host.docker.internal:8443
+    # lands on whatever holds the host's 127.0.0.1:8443 (VS Code's port
+    # forwarder), never on this container.
+    networks: [ default, feast-watch ]
 
   agent-1:
     build: { context: ., dockerfile: Dockerfile.agent }
@@ -22,3 +28,11 @@ services:
 
 volumes:
   mother-data:
+
+networks:
+  # Declared external (create once with `docker network create feast-watch`) so
+  # `docker compose down` here leaves it in place — otherwise tearing mother
+  # down would break the feast backend devcontainer, which declares the same
+  # network and could not start without it.
+  feast-watch:
+    external: true
