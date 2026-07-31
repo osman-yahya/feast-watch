@@ -57,3 +57,24 @@ Run the full push → rollup → chart cycle end-to-end:
 
    Kubernetes nodes use `deploy/k8s/daemonset.yaml` instead (hostPID + `/proc`
    mount, token supplied as a Secret).
+
+## Updating agents
+
+Stage the new release on the mother (step 1 above), then set the target version
+on one server at a time from the panel, or directly:
+
+```bash
+curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
+  https://<mother-ip>:8443/api/servers/<id>/version -d '{"version":"v1.3.0"}'
+```
+
+The agent picks the target up on its next push, verifies the checksum, replaces
+itself and exits for systemd to restart it. Watch `update_state` on
+`GET /api/servers`: `pending` while it converges, `idle` once `agent_version`
+matches, `failed` with `update_error` if it could not install. Send
+`{"version":""}` to cancel a rollout that has not landed.
+
+Targets are per server on purpose — update one host, confirm it, then the rest.
+The mother is not self-updating: `GET /api/version` reports its version so you
+can see what the agents should catch up to, but deploying it stays with
+systemd/Docker/k8s.
