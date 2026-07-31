@@ -62,6 +62,7 @@ func (a *API) Handler() http.Handler {
 	a.registerAdmin(mux)   // Task 11
 	a.registerChart(mux)   // Task 12
 	a.registerInstall(mux) // Task 13
+	a.registerVersions(mux)
 	return mux
 }
 
