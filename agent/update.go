@@ -58,16 +58,17 @@ func selfUpdate(cfg Config, desiredVersion, target string, exit func(int), clien
 		return data, nil
 	}
 
-	// Mirror the install script's arch-aware download (see install.sh.tmpl,
-	// which fetches "latest-$ARCH"): a version alone is ambiguous once the
-	// mother serves binaries for more than one architecture.
-	versionArch := desiredVersion + "-" + runtime.GOARCH
+	// The download is keyed by version *and* platform. GOARCH alone is not
+	// enough: the mother stages builds for several operating systems, and a
+	// Windows agent asking for "v1.3.0-amd64" would overwrite itself with the
+	// Linux binary of the same architecture.
+	versionPlatform := desiredVersion + "-" + runtime.GOOS + "-" + runtime.GOARCH
 
-	binary, err := fetch(binaryPath+versionArch, maxBinarySize)
+	binary, err := fetch(binaryPath+versionPlatform, maxBinarySize)
 	if err != nil {
 		return err
 	}
-	sumRaw, err := fetch(checksumPath+versionArch+".sha256", maxChecksumSize)
+	sumRaw, err := fetch(checksumPath+versionPlatform+".sha256", maxChecksumSize)
 	if err != nil {
 		return err
 	}
@@ -75,7 +76,7 @@ func selfUpdate(cfg Config, desiredVersion, target string, exit func(int), clien
 
 	h := sha256.Sum256(binary)
 	if hex.EncodeToString(h[:]) != wantSum {
-		return fmt.Errorf("checksum mismatch for %s: refusing update", versionArch)
+		return fmt.Errorf("checksum mismatch for %s: refusing update", versionPlatform)
 	}
 
 	tmp := target + ".new"
