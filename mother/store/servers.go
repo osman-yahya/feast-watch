@@ -25,6 +25,7 @@ type Server struct {
 	Hostname     string
 	IP           string
 	OS           string
+	Arch         string
 	AgentVersion string
 	LastPush     int64
 	// Capabilities is the collector set the agent reported it can actually
@@ -32,7 +33,24 @@ type Server struct {
 	// distinct from "supports nothing", since the panel only warns about
 	// unsupported collectors once it has heard from the agent.
 	Capabilities []string
-	CreatedAt    int64
+	// DesiredVersion is the agent version this server should converge on,
+	// set per server from the panel. Empty means "leave the agent alone".
+	DesiredVersion string
+	// UpdateError is the agent's last self-update failure, refreshed on every
+	// push so a recovered agent clears it without operator action.
+	UpdateError string
+	CreatedAt   int64
+}
+
+// Heartbeat is what one agent push reports about the agent itself, as opposed
+// to the metric samples it carries.
+type Heartbeat struct {
+	AgentVersion string
+	Hostname     string
+	IP           string
+	OS           string
+	Arch         string
+	UpdateError  string
 }
 
 func newToken() string {
@@ -60,13 +78,15 @@ func (s *Store) AddServer(name string) (Server, error) {
 	return srv, nil
 }
 
-const serverCols = `id, name, token, collectors, hostname, ip, os, agent_version, last_push, capabilities, created_at`
+const serverCols = `id, name, token, collectors, hostname, ip, os, arch, agent_version,
+	last_push, capabilities, desired_version, update_error, created_at`
 
 func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 	var srv Server
 	var cols, caps string
 	err := row.Scan(&srv.ID, &srv.Name, &srv.Token, &cols, &srv.Hostname, &srv.IP,
-		&srv.OS, &srv.AgentVersion, &srv.LastPush, &caps, &srv.CreatedAt)
+		&srv.OS, &srv.Arch, &srv.AgentVersion, &srv.LastPush, &caps,
+		&srv.DesiredVersion, &srv.UpdateError, &srv.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
 	}
@@ -84,6 +104,10 @@ func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 
 func (s *Store) ServerByToken(token string) (Server, error) {
 	return scanServer(s.db.QueryRow(`SELECT `+serverCols+` FROM servers WHERE token = ?`, token))
+}
+
+func (s *Store) ServerByID(id int64) (Server, error) {
+	return scanServer(s.db.QueryRow(`SELECT `+serverCols+` FROM servers WHERE id = ?`, id))
 }
 
 func (s *Store) ServerByName(name string) (Server, error) {
@@ -107,14 +131,42 @@ func (s *Store) ListServers() ([]Server, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) TouchServer(id int64, agentVersion, hostname, ip, osName string, now int64) error {
+// TouchServer records a push. Identity fields (hostname/ip/os/arch) ride the
+// first push only, so an empty value means "not reported now" and must not
+// erase what we already know. UpdateError is the opposite: it rides every
+// push, so it is written verbatim and an empty value legitimately clears a
+// previously failed update.
+func (s *Store) TouchServer(id int64, hb Heartbeat, now int64) error {
 	_, err := s.db.Exec(`UPDATE servers SET agent_version = ?, last_push = ?,
+		update_error = ?,
 		hostname = CASE WHEN ? != '' THEN ? ELSE hostname END,
 		ip       = CASE WHEN ? != '' THEN ? ELSE ip END,
-		os       = CASE WHEN ? != '' THEN ? ELSE os END
+		os       = CASE WHEN ? != '' THEN ? ELSE os END,
+		arch     = CASE WHEN ? != '' THEN ? ELSE arch END
 		WHERE id = ?`,
-		agentVersion, now, hostname, hostname, ip, ip, osName, osName, id)
+		hb.AgentVersion, now, hb.UpdateError,
+		hb.Hostname, hb.Hostname, hb.IP, hb.IP,
+		hb.OS, hb.OS, hb.Arch, hb.Arch, id)
 	return err
+}
+
+// SetDesiredVersion targets one server at an agent version. Rollout is
+// per-server by design: a single fleet-wide field turns one bad version into
+// a fleet-wide outage, with no way to try it on one host first.
+func (s *Store) SetDesiredVersion(id int64, version string) error {
+	res, err := s.db.Exec(
+		`UPDATE servers SET desired_version = ?, update_error = '' WHERE id = ?`, version, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetCapabilities records what the agent reported it can run. An empty report

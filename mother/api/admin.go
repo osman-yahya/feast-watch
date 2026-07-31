@@ -41,8 +41,26 @@ type serverView struct {
 	Hostname     string   `json:"hostname"`
 	IP           string   `json:"ip"`
 	OS           string   `json:"os"`
+	Arch         string   `json:"arch"`
 	AgentVersion string   `json:"agent_version"`
 	LastPush     int64    `json:"last_push"`
+	// DesiredVersion is the rollout target set from the panel; UpdateState is
+	// how far the agent has got with it, and UpdateError is why it stopped.
+	DesiredVersion string `json:"desired_version"`
+	UpdateState    string `json:"update_state"`
+	UpdateError    string `json:"update_error"`
+}
+
+// updateState derives the rollout state the panel renders. It is a projection
+// of the two stored fields, so the panel never has to re-implement the rule.
+func updateState(srv store.Server) string {
+	if srv.DesiredVersion == "" || srv.DesiredVersion == srv.AgentVersion {
+		return "idle"
+	}
+	if srv.UpdateError != "" {
+		return "failed"
+	}
+	return "pending"
 }
 
 func status(srv store.Server, s store.Settings, now int64) string {
@@ -72,8 +90,10 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 		views = append(views, serverView{
 			ID: s.ID, Name: s.Name, Status: status(s, settings, now),
 			Collectors: s.Collectors, Capabilities: s.Capabilities,
-			Hostname: s.Hostname, IP: s.IP, OS: s.OS,
+			Hostname: s.Hostname, IP: s.IP, OS: s.OS, Arch: s.Arch,
 			AgentVersion: s.AgentVersion, LastPush: s.LastPush,
+			DesiredVersion: s.DesiredVersion, UpdateState: updateState(s),
+			UpdateError: s.UpdateError,
 		})
 	}
 	writeJSON(w, http.StatusOK, views, "")

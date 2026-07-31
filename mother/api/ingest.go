@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
 
@@ -46,7 +47,10 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"storage failure"}`, http.StatusInternalServerError)
 		return
 	}
-	if err := a.st.TouchServer(srv.ID, req.AgentVersion, req.Hostname, req.IP, req.OS, now); err != nil {
+	if err := a.st.TouchServer(srv.ID, store.Heartbeat{
+		AgentVersion: req.AgentVersion, Hostname: req.Hostname, IP: req.IP,
+		OS: req.OS, Arch: req.Arch, UpdateError: req.UpdateError,
+	}, now); err != nil {
 		slog.Error("touch server", "server", srv.Name, "err", err)
 	}
 	// Only the first push carries capabilities; SetCapabilities ignores an
@@ -62,9 +66,11 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	// The rollout target comes from this server's row, not a fleet-wide
+	// setting, so one host can be updated and observed before the rest.
 	json.NewEncoder(w).Encode(protocol.IngestResponse{
 		Collectors:     srv.Collectors,
 		Interval:       settings.Interval,
-		DesiredVersion: settings.DesiredVersion,
+		DesiredVersion: srv.DesiredVersion,
 	})
 }

@@ -70,11 +70,13 @@ func TestServerByTokenAndTouch(t *testing.T) {
 		t.Fatalf("lookup: %v %+v", err, got)
 	}
 
-	if err := s.TouchServer(got.ID, "1.2.0", "web1-host", "10.0.0.7", "linux", 1700000000); err != nil {
+	if err := s.TouchServer(got.ID, Heartbeat{AgentVersion: "1.2.0", Hostname: "web1-host",
+		IP: "10.0.0.7", OS: "linux", Arch: "amd64"}, 1700000000); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.ListServers()
-	if list[0].AgentVersion != "1.2.0" || list[0].LastPush != 1700000000 || list[0].IP != "10.0.0.7" {
+	if list[0].AgentVersion != "1.2.0" || list[0].LastPush != 1700000000 ||
+		list[0].IP != "10.0.0.7" || list[0].Arch != "amd64" {
 		t.Fatalf("touch not persisted: %+v", list[0])
 	}
 

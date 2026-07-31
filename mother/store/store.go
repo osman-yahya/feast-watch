@@ -30,9 +30,12 @@ CREATE TABLE IF NOT EXISTS servers (
   hostname      TEXT NOT NULL DEFAULT '',
   ip            TEXT NOT NULL DEFAULT '',
   os            TEXT NOT NULL DEFAULT '',
+  arch          TEXT NOT NULL DEFAULT '',
   agent_version TEXT NOT NULL DEFAULT '',
   last_push     INTEGER NOT NULL DEFAULT 0,
   capabilities  TEXT NOT NULL DEFAULT '[]',
+  desired_version TEXT NOT NULL DEFAULT '',
+  update_error    TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS samples (
@@ -90,11 +93,39 @@ func Open(path string) (*Store, error) {
 func migrate(db *sql.DB) error {
 	statements := []string{
 		`ALTER TABLE servers ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE servers ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE servers ADD COLUMN desired_version TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE servers ADD COLUMN update_error TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate %q: %w", stmt, err)
 		}
+	}
+	return migrateDesiredVersionPerServer(db)
+}
+
+// migrateDesiredVersionPerServer moves the retired fleet-wide
+// settings.desired_version onto each server row. Dropping the setting without
+// this would silently cancel a rollout an operator had already started.
+// Deleting the key makes the migration idempotent.
+func migrateDesiredVersionPerServer(db *sql.DB) error {
+	var global string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'desired_version'`).Scan(&global)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("migrate desired_version: %w", err)
+	}
+	if global != "" {
+		if _, err := db.Exec(
+			`UPDATE servers SET desired_version = ? WHERE desired_version = ''`, global); err != nil {
+			return fmt.Errorf("migrate desired_version: %w", err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM settings WHERE key = 'desired_version'`); err != nil {
+		return fmt.Errorf("migrate desired_version: %w", err)
 	}
 	return nil
 }

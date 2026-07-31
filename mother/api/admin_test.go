@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
 
@@ -78,7 +79,7 @@ func TestServerStatusPendingOnlineDown(t *testing.T) {
 
 	postIngest(t, a.Handler(), fresh.Token, protocol.IngestRequest{Server: "fresh", Samples: map[string]float64{"cpu.usage": 1}})
 	// stale pushed long ago: threshold(3) × interval(10) = 30s window
-	st.TouchServer(stale.ID, "1.0.0", "", "", "", 1)
+	st.TouchServer(stale.ID, store.Heartbeat{AgentVersion: "1.0.0"}, 1)
 
 	w := adminReq(t, a.Handler(), http.MethodGet, "/api/servers", "")
 	var env envelope
@@ -103,12 +104,12 @@ func TestSettingsUpdateAffectsIngestResponse(t *testing.T) {
 	srv, _ := st.AddServer("web-1")
 
 	adminReq(t, a.Handler(), http.MethodPut, "/api/settings",
-		`{"interval":30,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75,"desired_version":"v9.9.9"}`)
+		`{"interval":30,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75}`)
 
 	w := postIngest(t, a.Handler(), srv.Token, protocol.IngestRequest{Server: "web-1", Samples: map[string]float64{}})
 	var resp protocol.IngestResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Interval != 30 || resp.DesiredVersion != "v9.9.9" {
+	if resp.Interval != 30 {
 		t.Fatalf("settings not applied to ingest: %+v", resp)
 	}
 }
@@ -154,7 +155,7 @@ func TestDeleteHistoryRequiresExplicitServerID(t *testing.T) {
 func TestSettingsRejectSubRateLimitInterval(t *testing.T) {
 	a, _ := setup(t)
 	w := adminReq(t, a.Handler(), http.MethodPut, "/api/settings",
-		`{"interval":1,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75,"desired_version":""}`)
+		`{"interval":1,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("interval=1 must 400 (below 2s rate-limit gap), got %d", w.Code)
 	}
