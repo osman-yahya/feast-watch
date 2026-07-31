@@ -19,6 +19,12 @@ import (
 
 const defaultInterval = 10 // seconds; the mother overrides this per response
 
+// updateRetryGap throttles repeated self-update attempts at the same target.
+// A target the agent cannot install — never staged, wrong platform, checksum
+// mismatch — otherwise gets retried on every push, which at the default 10s
+// interval means downloading a whole binary every 10 seconds indefinitely.
+const updateRetryGap = 5 * time.Minute
+
 type Loop struct {
 	cfg      Config
 	reg      *collectors.Registry
@@ -26,6 +32,13 @@ type Loop struct {
 	enabled  []string
 	interval int
 	pushed   bool
+
+	// Self-update state, reported to the mother on the next push so a failed
+	// rollout is visible in the panel instead of only in this host's journal.
+	updateErr    string
+	updateTarget string
+	lastUpdateAt time.Time
+	now          func() time.Time
 }
 
 func NewLoop(cfg Config, reg *collectors.Registry) *Loop {
@@ -40,6 +53,7 @@ func NewLoopWithClient(cfg Config, reg *collectors.Registry, client *http.Client
 		client:   client,
 		enabled:  []string{"cpu", "memory", "uptime", "disk"},
 		interval: defaultInterval,
+		now:      time.Now,
 	}
 }
 
@@ -49,11 +63,13 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 	req := protocol.IngestRequest{
 		Server:       l.cfg.ServerName,
 		AgentVersion: version.Version,
+		UpdateError:  l.updateErr,
 		Samples:      l.reg.CollectEnabled(ctx, l.enabled),
 	}
 	if !l.pushed {
 		req.Hostname, _ = os.Hostname()
 		req.OS = runtime.GOOS
+		req.Arch = runtime.GOARCH
 		req.IP = localIP()
 		// Capabilities only change when agent.conf changes, which requires a
 		// restart — and a restart replays the first push.
@@ -99,13 +115,15 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 
 // Run pushes forever at the mother-controlled interval. A failed push is
 // retried on the next tick — the agent never crashes on network errors.
-func (l *Loop) Run(ctx context.Context, onDesiredVersion func(string)) {
+// update performs the self-update and, on success, does not return: it
+// replaces this binary and exits for the service manager to restart.
+func (l *Loop) Run(ctx context.Context, update func(string) error) {
 	for {
 		resp, err := l.PushOnce(ctx)
 		if err != nil {
 			slog.Error("push failed", "err", err)
 		} else if resp.DesiredVersion != "" && resp.DesiredVersion != version.Version {
-			onDesiredVersion(resp.DesiredVersion)
+			l.tryUpdate(resp.DesiredVersion, update)
 		}
 		select {
 		case <-ctx.Done():
@@ -113,6 +131,26 @@ func (l *Loop) Run(ctx context.Context, onDesiredVersion func(string)) {
 		case <-time.After(time.Duration(l.interval) * time.Second):
 		}
 	}
+}
+
+// tryUpdate attempts the self-update, at most once per updateRetryGap for a
+// given target. The gap resets when the mother names a different version, so
+// an operator correcting a bad target is acted on at the next push rather
+// than after the backoff expires.
+func (l *Loop) tryUpdate(desired string, update func(string) error) {
+	now := l.now()
+	if desired == l.updateTarget && now.Sub(l.lastUpdateAt) < updateRetryGap {
+		return
+	}
+	l.updateTarget, l.lastUpdateAt = desired, now
+
+	slog.Info("self-update requested", "desired", desired)
+	if err := update(desired); err != nil {
+		slog.Error("self-update failed", "desired", desired, "err", err)
+		l.updateErr = err.Error()
+		return
+	}
+	l.updateErr = ""
 }
 
 func localIP() string {

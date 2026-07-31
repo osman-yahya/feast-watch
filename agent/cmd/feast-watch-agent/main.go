@@ -53,10 +53,7 @@ func main() {
 	}
 
 	loop := agent.NewLoopWithClient(cfg, reg, pushClient)
-	loop.Run(context.Background(), func(desired string) {
-		slog.Info("self-update requested", "desired", desired)
-		if err := agent.SelfUpdateWithClient(cfg, desired, os.Exit, updateClient); err != nil {
-			slog.Error("self-update failed", "err", err)
-		}
+	loop.Run(context.Background(), func(desired string) error {
+		return agent.SelfUpdateWithClient(cfg, desired, os.Exit, updateClient)
 	})
 }
