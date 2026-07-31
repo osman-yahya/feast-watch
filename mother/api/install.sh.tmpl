@@ -13,8 +13,11 @@ case "$ARCH" in
   *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
+# This installer is bash + systemd, so the target is always Linux. The GOOS is
+# part of the name because the mother also serves builds for other operating
+# systems, and an arch alone does not identify a runnable binary.
 echo "-> downloading agent"
-curl -sSLk "$MOTHER_URL/download/agent/latest-$ARCH" -o /usr/local/bin/feast-watch-agent
+curl -sSLk "$MOTHER_URL/download/agent/latest-linux-$ARCH" -o /usr/local/bin/feast-watch-agent
 chmod 0755 /usr/local/bin/feast-watch-agent
 
 echo "-> writing config"

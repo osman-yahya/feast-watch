@@ -23,12 +23,18 @@ Run the full push → rollup → chart cycle end-to-end:
 
 ## Production
 
-1. Build the binaries:
+1. Build and stage a release:
 
    ```bash
-   CGO_ENABLED=0 go build -o feast-watch ./mother/cmd/feast-watch
-   CGO_ENABLED=0 go build -o feast-watch-agent ./agent/cmd/feast-watch-agent
+   OUT_DIR=/var/lib/feast-watch/downloads bin/release.sh v1.3.0
    ```
+
+   This compiles the version into both binaries and writes every agent build,
+   plus its `.sha256`, where the mother serves them from. Do not build with a
+   bare `go build`: without the injected version every agent reports `dev`, the
+   panel's version column says `dev` for the whole fleet, and no agent can ever
+   satisfy a rollout target. Without the `.sha256` files an agent refuses to
+   install the update it downloaded.
 
 2. Run the mother with environment variables from [`.env.example`](.env.example)
    (copy it to `.env`, fill in real values, and load it into the environment).

@@ -1,5 +1,9 @@
 /e2e/agent-*.conf
 /downloads/
+# bin/ holds release.sh plus the binaries it builds; keep the script, drop the
+# build output.
+/bin/*
+!/bin/release.sh
 /certs/
 *.db
 *.pem
