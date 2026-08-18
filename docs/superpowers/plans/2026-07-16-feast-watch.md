@@ -54,7 +54,9 @@ mother/api/chart.go                # /api/chart — tier selection
 mother/api/install.go              # /install/<token>.sh + /download/agent/*
 mother/generate.go                 # `feast-watch generate --name=X` CLI
 mother/main.go                     # wiring + background jobs
-deploy/install.sh.tmpl             # install script template
+deploy/install.sh.tmpl             # install script template — RETIRED 2026-08-18:
+                                   # never embedded, drifted from the served copy.
+                                   # mother/api/install.sh.tmpl is canonical.
 deploy/feast-watch-agent.service   # systemd unit
 deploy/k8s/daemonset.yaml          # k8s alternative
 docker-compose.yml                 # local dev: mother + 2 agents

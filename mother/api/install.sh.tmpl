@@ -1,37 +1,55 @@
 #!/usr/bin/env bash
 # feast-watch agent installer — rendered by the mother per server token.
+#
+# The whole body lives in main(), invoked on the last line, because this script
+# is consumed as `curl ... | sudo bash`: bash executes statements as they
+# arrive, so a connection dropped mid-transfer would otherwise run a prefix of
+# the installer — typically enabling a service whose binary was never written.
 set -euo pipefail
 
 MOTHER_URL={{.MotherURL}}
 TOKEN={{.Token}}
 SERVER_NAME="{{.ServerName}}"
 
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
-  *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
-esac
+# agent_arch maps `uname -m` onto the GOARCH the release builds are named with.
+agent_arch() {
+  local arch
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) echo "unsupported arch: $arch" >&2; return 1 ;;
+  esac
+}
 
-# This installer is bash + systemd, so the target is always Linux. The GOOS is
-# part of the name because the mother also serves builds for other operating
-# systems, and an arch alone does not identify a runnable binary.
-echo "-> downloading agent"
-curl -sSLk "$MOTHER_URL/download/agent/latest-linux-$ARCH" -o /usr/local/bin/feast-watch-agent
-chmod 0755 /usr/local/bin/feast-watch-agent
+# download_agent fetches the binary for this platform.
+#
+# --fail is not optional: without it `curl -o` exits 0 on an HTTP 404 and writes
+# the response body, so a build that was never staged installs the literal text
+# "404 page not found" as the agent, chmod 0755, and systemd respawns against it
+# every 5 seconds. set -euo pipefail does not catch that — curl succeeded.
+download_agent() {
+  local arch="$1" dest="$2"
+  # This installer is bash + systemd, so the target is always Linux. The GOOS is
+  # part of the name because the mother also serves builds for other operating
+  # systems, and an arch alone does not identify a runnable binary.
+  curl -fsSLk "$MOTHER_URL/download/agent/latest-linux-$arch" -o "$dest"
+  chmod 0755 "$dest"
+}
 
-echo "-> writing config"
-mkdir -p /etc/feast-watch
-cat > /etc/feast-watch/agent.conf <<EOF
+write_config() {
+  mkdir -p /etc/feast-watch
+  cat > /etc/feast-watch/agent.conf <<EOF
 MOTHER_URL=$MOTHER_URL
 TOKEN=$TOKEN
 SERVER_NAME=$SERVER_NAME
 {{if .TLSSkipVerify}}TLS_SKIP_VERIFY=true
 {{end}}EOF
-chmod 0600 /etc/feast-watch/agent.conf
+  chmod 0600 /etc/feast-watch/agent.conf
+}
 
-echo "-> installing systemd service"
-cat > /etc/systemd/system/feast-watch-agent.service <<'EOF'
+install_service() {
+  cat > /etc/systemd/system/feast-watch-agent.service <<'EOF'
 [Unit]
 Description=feast-watch agent
 After=network-online.target
@@ -44,7 +62,24 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+  systemctl daemon-reload
+  systemctl enable --now feast-watch-agent
+}
 
-systemctl daemon-reload
-systemctl enable --now feast-watch-agent
-echo "feast-watch agent installed — server will appear online within seconds."
+main() {
+  local arch
+  arch=$(agent_arch)
+
+  echo "-> downloading agent"
+  download_agent "$arch" /usr/local/bin/feast-watch-agent
+
+  echo "-> writing config"
+  write_config
+
+  echo "-> installing systemd service"
+  install_service
+
+  echo "feast-watch agent installed — server will appear online within seconds."
+}
+
+main "$@"

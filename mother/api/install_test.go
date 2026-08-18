@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,5 +123,75 @@ func TestInstallCommandUsesScheme(t *testing.T) {
 	}
 	if got := InstallCommand("https", "10.0.0.1:8443", "tk_abc"); got != "curl -sSLk https://10.0.0.1:8443/install/tk_abc.sh | sudo bash" {
 		t.Fatalf("https scheme: %q", got)
+	}
+}
+
+// `curl -sSL -o file` exits 0 on an HTTP 404 and writes the response body, so
+// without --fail a missing build lands "404 page not found" in
+// /usr/local/bin/feast-watch-agent, gets chmod 0755, and systemd respawns
+// against it every 5 seconds. set -euo pipefail does not catch it: curl
+// succeeded.
+func TestInstallScriptFailsOnDownloadError(t *testing.T) {
+	a, st := setup(t)
+	body := fetchInstallScript(t, a, st, "Download_Guard")
+
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "curl ") {
+			continue
+		}
+		if !strings.Contains(line, "-f") && !strings.Contains(line, "--fail") {
+			t.Fatalf("every curl in the installer must fail on HTTP errors:\n%s", trimmed)
+		}
+	}
+}
+
+// The installer is consumed as `curl ... | sudo bash`, which executes each
+// statement as it arrives. A connection dropped mid-transfer would otherwise
+// run a prefix of the script — enabling a service whose binary was never
+// written. Wrapping the body in main() and calling it on the last line means a
+// truncated download never invokes anything.
+func TestInstallScriptIsTruncationSafe(t *testing.T) {
+	a, st := setup(t)
+	body := fetchInstallScript(t, a, st, "Truncation_Guard")
+
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last != `main "$@"` {
+		t.Fatalf(`installer must end with 'main "$@"', got %q`, last)
+	}
+	if !strings.Contains(body, "main() {") {
+		t.Fatalf("installer body must live inside main():\n%s", body)
+	}
+}
+
+// Only mother/api/install.sh.tmpl is embedded (mother/api/install.go). A second
+// copy elsewhere is never rendered, drifts silently, and is a coin-flip for
+// anyone told to "change the installer".
+func TestNoOrphanShellTemplates(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, "mother", "api")
+
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules") {
+			return fs.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".sh.tmpl") {
+			return nil
+		}
+		if filepath.Dir(path) != canonical {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("shell template outside mother/api/ is never embedded and will drift: %s", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
