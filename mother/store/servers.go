@@ -202,10 +202,16 @@ func (s *Store) DeleteServer(id int64) error {
 		return err
 	}
 	// servers.id is an INTEGER PRIMARY KEY without AUTOINCREMENT, so SQLite
-	// may reuse this id for a future server. Purge the history too, or a
-	// fresh server could inherit a deleted server's metrics.
-	for _, table := range []string{"rollup_1m", "rollup_1h"} {
-		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE server_id = ?`, id); err != nil {
+	// may reuse this id for a future server. Purge everything keyed on it, or
+	// a fresh server could inherit a deleted server's metrics — or its group
+	// memberships, and with them that group's next bulk rollout. No foreign
+	// key does this for us: none is enforced on this driver.
+	for _, q := range []string{
+		`DELETE FROM rollup_1m WHERE server_id = ?`,
+		`DELETE FROM rollup_1h WHERE server_id = ?`,
+		`DELETE FROM server_group_members WHERE server_id = ?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
 			return err
 		}
 	}

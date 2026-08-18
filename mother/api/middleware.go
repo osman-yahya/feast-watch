@@ -54,6 +54,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/ingest", a.handleIngest)
 	a.registerAdmin(mux) // Task 11
 	a.registerSettings(mux)
+	a.registerGroups(mux)
 	a.registerChart(mux)   // Task 12
 	a.registerInstall(mux) // Task 13
 	a.registerVersions(mux)

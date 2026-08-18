@@ -47,6 +47,9 @@ type serverView struct {
 	DesiredVersion string `json:"desired_version"`
 	UpdateState    string `json:"update_state"`
 	UpdateError    string `json:"update_error"`
+	// Groups the server belongs to. Always a list, never null: the panel maps
+	// over it directly.
+	Groups []groupRef `json:"groups"`
 }
 
 // updateState derives the rollout state the panel renders. It is a projection
@@ -72,29 +75,63 @@ func status(srv store.Server, s store.Settings, now int64) string {
 }
 
 func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
-	servers, err := a.st.ListServers()
+	servers, err := a.listServers(w, r)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
-		return
+		return // listServers already answered
 	}
 	settings, err := a.st.GetSettings()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
 		return
 	}
+	// Read the whole mapping once rather than once per row.
+	groupsByServer, err := a.st.GroupsByServer()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+		return
+	}
+
 	now := time.Now().Unix()
 	views := make([]serverView, 0, len(servers))
 	for _, s := range servers {
+		groups := make([]groupRef, 0, len(groupsByServer[s.ID]))
+		for _, g := range groupsByServer[s.ID] {
+			groups = append(groups, groupRef{ID: g.ID, Name: g.Name})
+		}
 		views = append(views, serverView{
 			ID: s.ID, Name: s.Name, Status: status(s, settings, now),
 			Collectors: s.Collectors, Capabilities: s.Capabilities,
 			Hostname: s.Hostname, IP: s.IP, OS: s.OS, Arch: s.Arch,
 			AgentVersion: s.AgentVersion, LastPush: s.LastPush,
 			DesiredVersion: s.DesiredVersion, UpdateState: updateState(s),
-			UpdateError: s.UpdateError,
+			UpdateError: s.UpdateError, Groups: groups,
 		})
 	}
 	writeJSON(w, http.StatusOK, views, "")
+}
+
+// listServers reads the fleet, narrowed to one group when ?group_id= is given.
+// It answers the request itself on failure and returns the error so the caller
+// stops.
+func (a *API) listServers(w http.ResponseWriter, r *http.Request) ([]store.Server, error) {
+	raw := r.URL.Query().Get("group_id")
+	if raw == "" {
+		servers, err := a.st.ListServers()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+		}
+		return servers, err
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, nil, "invalid group_id")
+		return nil, err
+	}
+	servers, err := a.st.ServersInGroup(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+	}
+	return servers, err
 }
 
 func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {

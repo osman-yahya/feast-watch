@@ -21,6 +21,12 @@ func adminReq(t *testing.T, h http.Handler, method, path, body string) *httptest
 	return w
 }
 
+func newRequest(method, path, body string) *http.Request {
+	return httptest.NewRequest(method, path, strings.NewReader(body))
+}
+
+func recorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
 type envelope struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data"`

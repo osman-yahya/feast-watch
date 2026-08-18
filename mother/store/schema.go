@@ -49,6 +49,23 @@ CREATE TABLE IF NOT EXISTS rollup_1h (
   min REAL NOT NULL, max REAL NOT NULL, sum REAL NOT NULL, cnt INTEGER NOT NULL,
   PRIMARY KEY (server_id, metric, window_start)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS server_groups (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT UNIQUE NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- No foreign keys, deliberately. PRAGMA foreign_keys is off and this driver
+-- does not enforce a declared constraint, so declaring one would imply a
+-- protection that does not exist. Memberships are purged explicitly by
+-- DeleteServer and DeleteGroup instead — which matters because servers.id is
+-- an INTEGER PRIMARY KEY without AUTOINCREMENT and SQLite reuses it, so an
+-- orphan row would enrol a brand-new server into a dead server's group.
+CREATE TABLE IF NOT EXISTS server_group_members (
+  group_id  INTEGER NOT NULL,
+  server_id INTEGER NOT NULL,
+  PRIMARY KEY (group_id, server_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_group_members_server ON server_group_members(server_id);
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

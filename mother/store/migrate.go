@@ -40,6 +40,22 @@ var migrations = []struct {
 	{"settings: retire the fleet-wide desired_version onto each server", migrateDesiredVersionPerServer},
 
 	{"rollups: store sum instead of avg, WITHOUT ROWID, and drop the raw tier", migrateRollupsToSum},
+
+	{"server groups", func(tx *sql.Tx) error {
+		// CREATE TABLE IF NOT EXISTS in the schema already made these on a
+		// fresh database; this entry exists so an older one gets them too and
+		// the version numbering stays honest about what changed.
+		_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS server_groups (
+			  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS server_group_members (
+			  group_id INTEGER NOT NULL, server_id INTEGER NOT NULL,
+			  PRIMARY KEY (group_id, server_id)
+			) WITHOUT ROWID;
+			CREATE INDEX IF NOT EXISTS idx_group_members_server ON server_group_members(server_id);`)
+		return err
+	}},
 }
 
 // migrate brings db up to the current schema version and reports how many
