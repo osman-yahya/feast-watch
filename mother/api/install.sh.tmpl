@@ -10,8 +10,9 @@ set -euo pipefail
 MOTHER_URL={{.MotherURL}}
 TOKEN={{.Token}}
 SERVER_NAME="{{.ServerName}}"
+RELEASE_BASE_URL={{.ReleaseBaseURL}}
 
-# agent_arch maps `uname -m` onto the GOARCH the release builds are named with.
+# agent_arch maps `uname -m` onto the GOARCH the release assets are named with.
 agent_arch() {
   local arch
   arch=$(uname -m)
@@ -22,19 +23,40 @@ agent_arch() {
   esac
 }
 
-# download_agent fetches the binary for this platform.
+# download_agent fetches the newest published build for this platform from the
+# release host, and verifies it before it is allowed to become the binary.
 #
 # --fail is not optional: without it `curl -o` exits 0 on an HTTP 404 and writes
-# the response body, so a build that was never staged installs the literal text
-# "404 page not found" as the agent, chmod 0755, and systemd respawns against it
-# every 5 seconds. set -euo pipefail does not catch that — curl succeeded.
+# the response body, so a missing asset installs an error page as the agent,
+# chmod 0755, and the service respawns against it every 5 seconds. set -euo
+# pipefail does not catch that — curl succeeded.
+#
+# The binary comes from the release host, not from the mother: the mother
+# stores no builds, so a rollout can never be blocked by a file nobody staged.
 download_agent() {
   local arch="$1" dest="$2"
-  # This installer is bash + systemd, so the target is always Linux. The GOOS is
-  # part of the name because the mother also serves builds for other operating
-  # systems, and an arch alone does not identify a runnable binary.
-  curl -fsSL "$MOTHER_URL/download/agent/latest-linux-$arch" -o "$dest"
-  chmod 0755 "$dest"
+  # This installer is bash + systemd, so the target is always Linux. The GOOS
+  # is part of the asset name because releases also carry builds for other
+  # operating systems, and an arch alone does not identify a runnable binary.
+  local asset="feast-watch-agent-linux-$arch"
+  local url="$RELEASE_BASE_URL/releases/latest/download/$asset"
+  local tmp
+  tmp=$(mktemp)
+  # shellcheck disable=SC2064  # expand tmp now: it must be removed on any exit
+  trap "rm -f '$tmp' '$tmp.sha256'" RETURN
+
+  curl -fsSL "$url" -o "$tmp"
+  curl -fsSL "$url.sha256" -o "$tmp.sha256"
+
+  local want got
+  want=$(cut -d' ' -f1 < "$tmp.sha256")
+  got=$(sha256sum "$tmp" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$tmp" | cut -d' ' -f1)
+  if [ "$want" != "$got" ]; then
+    echo "checksum mismatch for $asset: refusing to install" >&2
+    return 1
+  fi
+
+  install -m 0755 "$tmp" "$dest"
 }
 
 write_config() {

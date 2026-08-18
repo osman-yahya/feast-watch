@@ -23,18 +23,26 @@ Run the full push → rollup → chart cycle end-to-end:
 
 ## Production
 
-1. Build and stage a release:
+1. Publish a release:
 
    ```bash
-   OUT_DIR=/var/lib/feast-watch/downloads bin/release.sh v1.3.0
+   git tag v1.3.0 && git push origin v1.3.0
    ```
 
-   This compiles the version into both binaries and writes every agent build,
-   plus its `.sha256`, where the mother serves them from. Do not build with a
-   bare `go build`: without the injected version every agent reports `dev`, the
-   panel's version column says `dev` for the whole fleet, and no agent can ever
-   satisfy a rollout target. Without the `.sha256` files an agent refuses to
-   install the update it downloaded.
+   `.github/workflows/release.yml` builds every platform with the tag compiled
+   in and uploads each binary plus its `.sha256` to the GitHub release. The tag
+   *is* the version: it is what gets compiled in and what agents ask for, with
+   no mapping in between.
+
+   The mother stores no binaries and serves none. It reads the published
+   releases from the GitHub API — a conditional request every five minutes,
+   which is not counted against the unauthenticated rate limit when nothing
+   changed — and offers only versions carrying both a binary and its checksum
+   for the target host's platform.
+
+   `bin/release.sh` still builds every platform locally, named exactly as the
+   release assets, for development or for uploading by hand if CI is
+   unavailable.
 
 2. Run the mother with environment variables from [`.env.example`](.env.example)
    (copy it to `.env`, fill in real values, and load it into the environment).
@@ -82,8 +90,10 @@ curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
   http://<mother-ip>:8443/api/servers/<id>/version -d '{"version":"v1.3.0"}'
 ```
 
-The agent picks the target up on its next push, verifies the checksum, replaces
-itself and exits for systemd to restart it. Watch `update_state` on
+The agent picks the target up on its next push, downloads that build from the
+GitHub release, verifies the checksum, replaces itself and exits for systemd to
+restart it. The mother is never in the binary path, so a rollout cannot be
+blocked by a file nobody staged on it. Watch `update_state` on
 `GET /api/servers`: `pending` while it converges, `idle` once `agent_version`
 matches, `failed` with `update_error` if it could not install. Send
 `{"version":""}` to cancel a rollout that has not landed.

@@ -10,13 +10,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
 
 type API struct {
-	st        *store.Store
-	apiKey    string
-	downloads string // directory holding agent binaries + .sha256 files
+	st     *store.Store
+	apiKey string
+	// releases is the mother's view of what agent builds exist. The mother
+	// stores no binaries and serves none: agents download from the public
+	// GitHub release, and this is only the index a rollout target is checked
+	// against.
+	releases *release.Cache
 	// publicURL is the base URL agents reach the mother on, scheme included,
 	// e.g. "http://10.0.0.1:8443". It is a whole URL rather than a host:port
 	// because the mother no longer decides the scheme: it serves plain HTTP
@@ -28,9 +33,9 @@ type API struct {
 	lastPush map[int64]time.Time // per-server rate-limit state
 }
 
-func New(st *store.Store, apiKey string, downloads string) *API {
+func New(st *store.Store, apiKey string, releases *release.Cache) *API {
 	return &API{
-		st: st, apiKey: apiKey, downloads: downloads,
+		st: st, apiKey: apiKey, releases: releases,
 		// Plain HTTP by default and by construction. There is no setter that
 		// can raise this to https on its own — the whole URL is supplied or it
 		// is not, so a half-configured mother cannot hand agents a scheme it

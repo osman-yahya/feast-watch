@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 type Config struct {
@@ -24,6 +26,20 @@ type Config struct {
 	PostgresDSN        string
 	K8sAPIURL          string
 	K8sToken           string
+
+	// ReleaseBaseURL is where agent binaries are downloaded from. It defaults
+	// to the public repository (release.DefaultBaseURL) and exists as a key
+	// only so tests and an internal mirror can point somewhere else — the
+	// mother never supplies it, because the mother is not in the binary path.
+	ReleaseBaseURL string
+}
+
+// releaseBaseURL is the configured release host, or the public default.
+func (c Config) releaseBaseURL() string {
+	if c.ReleaseBaseURL != "" {
+		return c.ReleaseBaseURL
+	}
+	return release.DefaultBaseURL
 }
 
 // LoadConfig reads KEY=VALUE lines ('#' comments allowed) and validates
@@ -62,6 +78,7 @@ func LoadConfig(path string) (Config, error) {
 		PostgresDSN:      kv["POSTGRES_DSN"],
 		K8sAPIURL:        kv["K8S_API_URL"],
 		K8sToken:         kv["K8S_TOKEN"],
+		ReleaseBaseURL:   kv["RELEASE_BASE_URL"],
 	}
 	if raw := kv["CENTRIFUGO_CONNS_MAX"]; raw != "" {
 		cfg.CentrifugoConnsMax, err = strconv.ParseFloat(raw, 64)
@@ -82,6 +99,11 @@ func LoadConfig(path string) (Config, error) {
 	if err := validateMotherURL(cfg.MotherURL); err != nil {
 		return Config{}, err
 	}
+	if cfg.ReleaseBaseURL != "" {
+		if err := validateURL("RELEASE_BASE_URL", cfg.ReleaseBaseURL); err != nil {
+			return Config{}, err
+		}
+	}
 	return cfg, nil
 }
 
@@ -90,15 +112,19 @@ func LoadConfig(path string) (Config, error) {
 // bare host:port or a missing scheme produces a request error on every push
 // with nothing in the config to point at.
 func validateMotherURL(raw string) error {
+	return validateURL("MOTHER_URL", raw)
+}
+
+func validateURL(key, raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("MOTHER_URL %q is not a URL: %w", raw, err)
+		return fmt.Errorf("%s %q is not a URL: %w", key, raw, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("MOTHER_URL %q must start with http:// or https://", raw)
+		return fmt.Errorf("%s %q must start with http:// or https://", key, raw)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("MOTHER_URL %q has no host", raw)
+		return fmt.Errorf("%s %q has no host", key, raw)
 	}
 	return nil
 }

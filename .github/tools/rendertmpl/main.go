@@ -9,7 +9,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"text/template"
+
+	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 func main() {
@@ -17,7 +20,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: rendertmpl <template> <out>")
 		os.Exit(2)
 	}
-	tmpl, err := template.ParseFiles(os.Args[1])
+	// missingkey=error mirrors the production renderer: a field CI forgets to
+	// supply must fail here rather than lint a script containing "<no value>".
+	tmpl, err := template.New(filepath.Base(os.Args[1])).
+		Option("missingkey=error").ParseFiles(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -29,8 +35,10 @@ func main() {
 	}
 	defer out.Close()
 	if err := tmpl.Execute(out, map[string]any{
-		"MotherURL": "http://127.0.0.1:8443", "Token": "tk_placeholder",
-		"ServerName": "placeholder",
+		"MotherURL":      "http://127.0.0.1:8443",
+		"Token":          "tk_placeholder",
+		"ServerName":     "placeholder",
+		"ReleaseBaseURL": release.DefaultBaseURL,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

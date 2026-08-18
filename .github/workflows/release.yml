@@ -1,0 +1,77 @@
+name: release
+
+# A tag is the whole release trigger: the tag name becomes the version compiled
+# into the binaries AND the version agents ask for, with no mapping table in
+# between. workflow_dispatch is there to re-run a failed upload without moving
+# the tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and upload
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Must match shared/release.Platforms — the mother offers exactly what
+        # this builds, so a platform here and not there (or the reverse) means
+        # a rollout target whose asset was never uploaded.
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build agent
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          # No .exe on windows: the agent replaces its own executable at
+          # whatever path it runs from, and the asset name is what both the
+          # download URL and the mother's index key on.
+          asset="feast-watch-agent-${GOOS}-${GOARCH}"
+          CGO_ENABLED=0 go build \
+            -ldflags "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${TAG}" \
+            -o "$asset" ./agent/cmd/feast-watch-agent
+          # The agent refuses to install without a verified checksum, so a build
+          # uploaded without one is a rollout target that can only ever fail.
+          sha256sum "$asset" | cut -d' ' -f1 > "$asset.sha256"
+
+      - name: verify the version was injected
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        # A binary built without -ldflags reports "dev" forever, so no agent can
+        # ever satisfy a rollout target. Only the host-native build can be run
+        # here to check it.
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          go run ./.github/tools/printversion | tee /tmp/v
+          grep -qx "$TAG" /tmp/v || { echo "version not injected"; exit 1; }
+        continue-on-error: false
+
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          asset="feast-watch-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          # --clobber so a re-run replaces a partial upload instead of failing.
+          gh release upload "$TAG" "$asset" "$asset.sha256" --clobber

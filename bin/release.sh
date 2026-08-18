@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
-# Build the mother and every agent binary with the version compiled in, and
-# stage the agent builds where the mother serves them from.
+# Build the mother and every agent binary locally, with the version compiled in.
 #
 #   bin/release.sh              # version from `git describe`
 #   bin/release.sh v1.3.0       # explicit version
-#   OUT_DIR=/var/lib/feast-watch/downloads bin/release.sh
 #
-# Without this, shared/version.Version stays "dev" in every build: the panel
-# shows "dev" for every agent, and "update this server to v1.3.0" can never be
-# satisfied because no agent ever reports being on v1.3.0.
+# This is a developer convenience, not the release path. Releases are built and
+# published by .github/workflows/release.yml on a tag push: agents download
+# their binaries from the GitHub release, and the mother neither stores nor
+# serves them, so there is nothing to stage on a server any more.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-OUT_DIR="${OUT_DIR:-downloads}"
-BIN_DIR="${BIN_DIR:-bin}"
+OUT_DIR="${OUT_DIR:-bin/build}"
 LDFLAGS="-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${VERSION}"
 
-# Platforms agents run on. Must stay in sync with knownPlatforms in
-# mother/api/versions.go, which is what decides whether a build is offered as
-# a rollout target in the panel.
+# Must match shared/release.Platforms and the release workflow's matrix.
 PLATFORMS=(
   linux-amd64
   linux-arm64
@@ -32,10 +28,9 @@ if [ "$VERSION" = "dev" ] || [[ "$VERSION" == *-dirty ]]; then
   echo "!! version is '$VERSION' — tag the commit before a real release" >&2
 fi
 
-mkdir -p "$OUT_DIR" "$BIN_DIR"
+mkdir -p "$OUT_DIR"
 
-# checksum writes the .sha256 the agent verifies before replacing itself. A
-# build without one is never offered by the mother, so this is not optional.
+# checksum writes the .sha256 the agent verifies before replacing itself.
 checksum() {
   local file="$1"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -48,40 +43,21 @@ checksum() {
 echo "-> version $VERSION"
 
 echo "-> building mother"
-go build -ldflags "$LDFLAGS" -o "$BIN_DIR/feast-watch" ./mother/cmd/feast-watch
+go build -ldflags "$LDFLAGS" -o "$OUT_DIR/feast-watch" ./mother/cmd/feast-watch
 
 for platform in "${PLATFORMS[@]}"; do
   goos="${platform%-*}"
   goarch="${platform#*-}"
 
-  # No .exe suffix even for windows: the agent replaces its own executable at
-  # whatever path it already runs from, and both the download URL and the
-  # mother's build listing key on the bare "<version>-<goos>-<goarch>" name.
-  out="$OUT_DIR/feast-watch-agent-$VERSION-$platform"
+  # Named exactly as the release asset, so a locally built binary can be
+  # uploaded to a release by hand if CI is unavailable.
+  out="$OUT_DIR/feast-watch-agent-$platform"
   echo "-> building agent $platform"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -ldflags "$LDFLAGS" -o "$out" ./agent/cmd/feast-watch-agent
   checksum "$out"
-
-  # The install script fetches the moving "latest" pointer, so every release
-  # has to move it or new installs keep landing on the previous version.
-  latest="$OUT_DIR/feast-watch-agent-latest-$platform"
-  cp "$out" "$latest"
-  checksum "$latest"
-
-  # Compatibility alias for agents installed before builds carried a GOOS:
-  # they request "<version>-<arch>" and cannot be updated without it. Linux
-  # only — it is the platform those agents were installed on. Drop this once
-  # no agent reports a version older than the first platform-explicit build.
-  if [ "$goos" = "linux" ]; then
-    legacy="$OUT_DIR/feast-watch-agent-$VERSION-$goarch"
-    cp "$out" "$legacy"
-    checksum "$legacy"
-  fi
 done
 
 echo
-echo "staged in $OUT_DIR:"
-ls -1 "$OUT_DIR" | grep -- "-$VERSION-\|-latest-" | sed 's/^/  /' || true
-echo
-echo "mother binary: $BIN_DIR/feast-watch"
+echo "built in $OUT_DIR:"
+ls -1 "$OUT_DIR" | sed 's/^/  /'

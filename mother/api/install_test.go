@@ -4,12 +4,12 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/osman-yahya/feast-watch/mother/store"
+	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
@@ -38,26 +38,22 @@ func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
 	}
 }
 
-func TestDownloadServesBinaryAndChecksum(t *testing.T) {
-	st, _ := store.Open(":memory:")
-	t.Cleanup(func() { st.Close() })
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "feast-watch-agent-v1.3.0"), []byte("BINARY"), 0o755)
-	os.WriteFile(filepath.Join(dir, "feast-watch-agent-v1.3.0.sha256"), []byte("abc123\n"), 0o644)
-	a := New(st, "adminkey", dir)
-
-	r := httptest.NewRequest(http.MethodGet, "/download/agent/v1.3.0", nil)
-	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusOK || w.Body.String() != "BINARY" {
-		t.Fatalf("binary download: %d %q", w.Code, w.Body.String())
-	}
-
-	r = httptest.NewRequest(http.MethodGet, "/download/agent/..%2F..%2Fetc%2Fpasswd", nil)
-	w = httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, r)
-	if w.Code == http.StatusOK {
-		t.Fatal("path traversal must be rejected")
+// The mother serves no binaries at all. Agents download builds from the public
+// GitHub release, so there is nothing here to path-traverse into and nothing to
+// stage before a rollout can work.
+func TestMotherServesNoBinaries(t *testing.T) {
+	a, _ := setup(t)
+	for _, path := range []string{
+		"/download/agent/v1.3.0",
+		"/download/agent/latest-linux-amd64",
+		"/download/agent/..%2F..%2Fetc%2Fpasswd",
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, r)
+		if w.Code == http.StatusOK {
+			t.Fatalf("%s must not be served, got 200", path)
+		}
 	}
 }
 
@@ -80,17 +76,42 @@ func fetchInstallScript(t *testing.T, a *API, st *store.Store, name string) stri
 // A freshly constructed API must not be able to hand agents a scheme the
 // mother does not serve. There is no setter that raises the scheme on its own:
 // the whole URL is supplied or the plain-HTTP default stands.
+// The installer pulls the binary from the release host and verifies it before
+// installing. Fetching it from the mother would put binary distribution back
+// on the monitoring path.
+func TestInstallScriptDownloadsFromTheReleaseHost(t *testing.T) {
+	a, st := setup(t)
+	a.SetPublicURL("http://10.0.0.1:8443")
+
+	body := fetchInstallScript(t, a, st, "From_GitHub")
+	if !strings.Contains(body, "RELEASE_BASE_URL="+release.DefaultBaseURL) {
+		t.Fatalf("installer must carry the release host:\n%s", body)
+	}
+	if !strings.Contains(body, "$RELEASE_BASE_URL/releases/latest/download/") {
+		t.Fatalf("installer must download from the release host:\n%s", body)
+	}
+	if strings.Contains(body, "$MOTHER_URL/download") {
+		t.Fatalf("installer must not fetch binaries from the mother:\n%s", body)
+	}
+	if !strings.Contains(body, ".sha256") {
+		t.Fatalf("installer must verify the download before installing it:\n%s", body)
+	}
+}
+
 func TestInstallScriptDefaultsToPlainHTTP(t *testing.T) {
 	st, _ := store.Open(":memory:")
 	t.Cleanup(func() { st.Close() })
-	a := New(st, "adminkey", t.TempDir())
+	a := New(st, "adminkey", emptyReleases())
 
 	body := fetchInstallScript(t, a, st, "Default_Mother")
 	if !strings.Contains(body, "MOTHER_URL=http://127.0.0.1:8443") {
 		t.Fatalf("default must be plain HTTP:\n%s", body)
 	}
-	if strings.Contains(body, "https://") {
-		t.Fatalf("nothing may render an https URL by default:\n%s", body)
+	// Only the mother's own URL is asserted: RELEASE_BASE_URL is github.com and
+	// is legitimately https — it is a public host with a trusted certificate,
+	// not something this mother serves.
+	if strings.Contains(body, "MOTHER_URL=https://") {
+		t.Fatalf("the mother must not render an https URL for itself by default:\n%s", body)
 	}
 }
 

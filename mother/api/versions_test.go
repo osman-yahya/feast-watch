@@ -5,28 +5,26 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
 
-// stage writes an agent build into the mother's downloads directory. Passing
-// withChecksum=false simulates a half-finished release.
-func stage(t *testing.T, dir, version, platform string, withChecksum bool) {
+// publish makes these builds the mother's release index, standing in for what
+// the GitHub poller would have found. Which releases qualify as a build — a
+// published, non-draft release carrying both a binary and its checksum — is
+// decided and tested in mother/release; here the index is a given.
+func publish(t *testing.T, a *API, builds ...release.Build) {
 	t.Helper()
-	name := filepath.Join(dir, binaryPrefix+version+"-"+platform)
-	if err := os.WriteFile(name, []byte("binary"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if withChecksum {
-		if err := os.WriteFile(name+checksumSuffix, []byte("abc123\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	a.releases.Seed(builds)
+}
+
+// build is a shorthand for one published version and the platforms it covers.
+func build(version string, platforms ...string) release.Build {
+	return release.Build{Version: version, Platforms: platforms}
 }
 
 // reportedServer creates a server and has it push once, so the mother knows
@@ -72,11 +70,11 @@ func TestVersionEndpointReportsMotherVersion(t *testing.T) {
 	}
 }
 
-func TestVersionEndpointListsStagedBuildsNewestFirst(t *testing.T) {
+func TestVersionEndpointPassesTheIndexThrough(t *testing.T) {
 	a, _ := setup(t)
-	stage(t, a.downloads, "v1.9.0", "linux-amd64", true)
-	stage(t, a.downloads, "v1.10.0", "linux-amd64", true)
-	stage(t, a.downloads, "v1.10.0", "linux-arm64", true)
+	publish(t, a,
+		build("v1.10.0", "linux-amd64", "linux-arm64"),
+		build("v1.9.0", "linux-amd64"))
 
 	agents := getVersion(t, a).Agents
 	if len(agents) != 2 {
@@ -91,31 +89,26 @@ func TestVersionEndpointListsStagedBuildsNewestFirst(t *testing.T) {
 	}
 }
 
-// The agent refuses to install without a verified checksum, so a build missing
-// its .sha256 would produce a button that can only ever fail.
-func TestVersionEndpointHidesBuildsMissingChecksum(t *testing.T) {
+// The index says when it was last checked and whether that check failed, so an
+// operator picking a target can see the list may have moved on.
+func TestVersionEndpointReportsIndexFreshness(t *testing.T) {
 	a, _ := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", false)
-
-	if agents := getVersion(t, a).Agents; len(agents) != 0 {
-		t.Fatalf("half-staged build must not be offered: %+v", agents)
+	if got := getVersion(t, a); !got.Stale {
+		t.Fatal("a mother that has never reached the release host must report stale")
 	}
-}
-
-// "latest" is the moving pointer the install script uses. An agent can never
-// *be* "latest", so targeting it would re-download and restart on every push.
-func TestVersionEndpointHidesLatestAlias(t *testing.T) {
-	a, _ := setup(t)
-	stage(t, a.downloads, latestAlias, "linux-amd64", true)
-
-	if agents := getVersion(t, a).Agents; len(agents) != 0 {
-		t.Fatalf("latest must not be offered as a target: %+v", agents)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
+	got := getVersion(t, a)
+	if got.Stale {
+		t.Fatal("a populated index must not report stale")
+	}
+	if got.CheckedAt.IsZero() {
+		t.Fatal("checked_at must be reported")
 	}
 }
 
 func TestSetServerVersionReachesTheAgent(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 	srv := reportedServer(t, a, st, "web-1", "linux", "amd64")
 
 	w := adminReq(t, a.Handler(), http.MethodPut,
@@ -136,7 +129,7 @@ func TestSetServerVersionReachesTheAgent(t *testing.T) {
 // before the rest of the fleet follows.
 func TestSetServerVersionLeavesOtherServersAlone(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 	canary := reportedServer(t, a, st, "canary", "linux", "amd64")
 	other := reportedServer(t, a, st, "other", "linux", "amd64")
 
@@ -149,14 +142,14 @@ func TestSetServerVersionLeavesOtherServersAlone(t *testing.T) {
 	}
 }
 
-func TestSetServerVersionRejectsUnstagedVersion(t *testing.T) {
+func TestSetServerVersionRejectsAnUnpublishedVersion(t *testing.T) {
 	a, st := setup(t)
 	srv := reportedServer(t, a, st, "web-1", "linux", "amd64")
 
 	w := adminReq(t, a.Handler(), http.MethodPut,
 		fmt.Sprintf("/api/servers/%d/version", srv.ID), `{"version":"v9.9.9"}`)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for a version with no binary, got %d: %s", w.Code, w.Body)
+		t.Fatalf("want 400 for a version with no published release, got %d: %s", w.Code, w.Body)
 	}
 	got, _ := st.ServerByID(srv.ID)
 	if got.DesiredVersion != "" {
@@ -166,7 +159,7 @@ func TestSetServerVersionRejectsUnstagedVersion(t *testing.T) {
 
 func TestSetServerVersionRejectsLatest(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, latestAlias, "linux-amd64", true)
+	publish(t, a, build(latestAlias, "linux-amd64"))
 	srv := reportedServer(t, a, st, "web-1", "linux", "amd64")
 
 	w := adminReq(t, a.Handler(), http.MethodPut,
@@ -180,7 +173,7 @@ func TestSetServerVersionRejectsLatest(t *testing.T) {
 // hand the agent a binary this machine cannot execute.
 func TestSetServerVersionRejectsWrongPlatform(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 	srv := reportedServer(t, a, st, "arm-box", "linux", "arm64")
 
 	w := adminReq(t, a.Handler(), http.MethodPut,
@@ -195,7 +188,7 @@ func TestSetServerVersionRejectsWrongPlatform(t *testing.T) {
 // them to send it.
 func TestSetServerVersionAllowsUnknownPlatform(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 	srv, _ := st.AddServer("legacy")
 
 	w := adminReq(t, a.Handler(), http.MethodPut,
@@ -208,7 +201,7 @@ func TestSetServerVersionAllowsUnknownPlatform(t *testing.T) {
 // Clearing the target is how an operator cancels a rollout that has not landed.
 func TestSetServerVersionAcceptsEmptyToCancel(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 	srv := reportedServer(t, a, st, "web-1", "linux", "amd64")
 	st.SetDesiredVersion(srv.ID, "v1.3.0")
 
@@ -235,7 +228,7 @@ func TestSetServerVersionUnknownServer(t *testing.T) {
 // lives here and is exercised through the surface the panel actually reads.
 func TestServerListExposesUpdateState(t *testing.T) {
 	a, st := setup(t)
-	stage(t, a.downloads, "v1.3.0", "linux-amd64", true)
+	publish(t, a, build("v1.3.0", "linux-amd64"))
 
 	reportedServer(t, a, st, "idle-box", "linux", "amd64")
 	pending := reportedServer(t, a, st, "pending-box", "linux", "amd64")

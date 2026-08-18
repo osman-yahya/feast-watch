@@ -6,7 +6,6 @@ services:
       FW_LISTEN: ":8443"
       FW_PUBLIC_URL: "http://mother:8443"
       FW_API_KEY: dev-api-key
-      FW_DOWNLOADS_DIR: /data/downloads
     volumes: [ "mother-data:/data" ]
     ports: [ "8443:8443" ]
     # Also joined to the shared `feast-watch` network so the feast backend's

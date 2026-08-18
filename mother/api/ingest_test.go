@@ -2,11 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
@@ -18,7 +21,27 @@ func setup(t *testing.T) (*API, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return New(st, "adminkey", t.TempDir()), st
+	return New(st, "adminkey", emptyReleases()), st
+}
+
+// emptyReleases is an index that has never seen a release — the state of a
+// mother that has not yet reached GitHub.
+func emptyReleases() *release.Cache {
+	return release.NewCache(staticSource(nil), time.Now)
+}
+
+// withReleases builds an index holding exactly these builds, standing in for
+// what the GitHub poller would have published.
+func withReleases(builds ...release.Build) *release.Cache {
+	c := release.NewCache(staticSource(builds), time.Now)
+	c.Seed(builds)
+	return c
+}
+
+type staticSource []release.Build
+
+func (s staticSource) Fetch(context.Context) ([]release.Build, bool, error) {
+	return []release.Build(s), false, nil
 }
 
 func postIngest(t *testing.T, h http.Handler, token string, req protocol.IngestRequest) *httptest.ResponseRecorder {
