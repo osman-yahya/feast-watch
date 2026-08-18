@@ -224,3 +224,69 @@ func TestNoOrphanShellTemplates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The uninstaller is written to disk by the installer, not fetched when it is
+// needed: a host being decommissioned may no longer reach the mother, and the
+// mother may be retired before the last agent is.
+func TestInstallScriptLeavesAnUninstallerOnDisk(t *testing.T) {
+	a, st := setup(t)
+	a.SetPublicURL("http://10.0.0.1:8443")
+
+	body := fetchInstallScript(t, a, st, "With_Uninstaller")
+	for _, want := range []string{
+		"/usr/local/sbin/feast-watch-agent-uninstall",
+		"$MOTHER_URL/uninstall.sh",
+		"/etc/feast-watch/install-manifest",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("installer must set up %q:\n%s", want, body)
+		}
+	}
+}
+
+// Unauthenticated on purpose: it carries no secret, and gating it on a token
+// would 404 the moment the operator deletes the server — exactly when a host
+// most needs cleaning up.
+func TestUninstallScriptIsServedWithoutAToken(t *testing.T) {
+	a, _ := setup(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/uninstall.sh", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "main \"$@\"") {
+		t.Fatalf("uninstaller must be truncation-safe:\n%s", body)
+	}
+	// The token is the one secret on a monitored host; an uninstaller that
+	// removed the config by default would take it with no way back.
+	if !strings.Contains(body, "--purge") {
+		t.Fatalf("removing the config must be opt-in:\n%s", body)
+	}
+}
+
+// It removes the service, the binary, the leftovers a crashed self-update
+// strands, and finally itself.
+func TestUninstallScriptRemovesEverythingTheInstallerCreated(t *testing.T) {
+	a, _ := setup(t)
+	r := httptest.NewRequest(http.MethodGet, "/uninstall.sh", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	body := w.Body.String()
+
+	for _, want := range []string{
+		"/usr/local/bin/feast-watch-agent",
+		"/etc/systemd/system/feast-watch-agent.service",
+		"/etc/feast-watch",
+		"/usr/local/sbin/feast-watch-agent-uninstall",
+		".new",         // the temp file a crashed self-update leaves behind
+		"reset-failed", // or the dead unit lingers in `systemctl --failed`
+		"daemon-reload",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("uninstaller must handle %q:\n%s", want, body)
+		}
+	}
+}

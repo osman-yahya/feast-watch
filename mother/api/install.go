@@ -14,6 +14,12 @@ import (
 //go:embed install.sh.tmpl
 var installTmplSrc string
 
+// uninstallScript is served verbatim and is also what the installer writes to
+// disk, so there is exactly one uninstaller and it cannot drift from itself.
+//
+//go:embed uninstall.sh
+var uninstallScript string
+
 // missingkey=error turns a field the handler forgot to supply into a render
 // error instead of the literal "<no value>". That string in a shell script is
 // a syntax error at best and a wrong URL at worst, on a script that is piped
@@ -27,6 +33,15 @@ var installTmpl = template.Must(
 // cannot be blocked by a file nobody staged on it.
 func (a *API) registerInstall(mux *http.ServeMux) {
 	mux.HandleFunc("GET /install/{token}", a.handleInstallScript)
+	// Unauthenticated on purpose. It carries no secret, and requiring a token
+	// would 404 the moment the operator deletes the server — which is exactly
+	// when a host most needs cleaning up.
+	mux.HandleFunc("GET /uninstall.sh", a.handleUninstallScript)
+}
+
+func (a *API) handleUninstallScript(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/x-shellscript")
+	w.Write([]byte(uninstallScript))
 }
 
 func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {

@@ -122,3 +122,32 @@ backup first.
 `retention_raw_hours` is gone from the settings payload. It is still accepted
 and ignored on the way in, so an older panel or proxy is not rejected while it
 catches up.
+
+## Removing it
+
+Agent, on each monitored host — the installer leaves the uninstaller on disk, so
+this works even when the mother is already gone:
+
+```bash
+sudo feast-watch-agent-uninstall --purge
+```
+
+Mother, on its own host:
+
+```bash
+sudo deploy/mother-uninstall.sh --purge
+```
+
+Order matters and the flags are load-bearing. See
+[`deploy/TEARDOWN.md`](deploy/TEARDOWN.md) for what each one removes, why the
+host is cleaned before the panel record, and why the shared Docker network must
+be left alone.
+
+The mother can also be installed as a service rather than run by hand:
+
+```bash
+bin/release.sh v1.3.0
+sudo deploy/mother-install.sh bin/build/feast-watch
+# edit /etc/feast-watch/mother.env, then:
+sudo systemctl start feast-watch-mother
+```

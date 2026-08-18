@@ -59,6 +59,26 @@ download_agent() {
   install -m 0755 "$tmp" "$dest"
 }
 
+# install_uninstaller puts the uninstaller on disk so a host being
+# decommissioned can be cleaned without reaching the mother — which may be
+# unreachable from a machine on its way out, or already retired itself. The
+# manifest records what this installer touched, so a future uninstaller can
+# clean a host installed by an older one.
+install_uninstaller() {
+  curl -fsSL "$MOTHER_URL/uninstall.sh" -o /usr/local/sbin/feast-watch-agent-uninstall
+  chmod 0755 /usr/local/sbin/feast-watch-agent-uninstall
+
+  cat > /etc/feast-watch/install-manifest <<EOF
+# What this installer created. No secrets: the token lives in agent.conf.
+installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+bin=/usr/local/bin/feast-watch-agent
+conf=/etc/feast-watch/agent.conf
+unit=/etc/systemd/system/feast-watch-agent.service
+uninstaller=/usr/local/sbin/feast-watch-agent-uninstall
+EOF
+  chmod 0644 /etc/feast-watch/install-manifest
+}
+
 write_config() {
   mkdir -p /etc/feast-watch
   cat > /etc/feast-watch/agent.conf <<EOF
@@ -97,10 +117,14 @@ main() {
   echo "-> writing config"
   write_config
 
+  echo "-> installing uninstaller"
+  install_uninstaller
+
   echo "-> installing systemd service"
   install_service
 
   echo "feast-watch agent installed — server will appear online within seconds."
+  echo "To remove it later: sudo feast-watch-agent-uninstall --purge"
 }
 
 main "$@"

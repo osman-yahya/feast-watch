@@ -1,0 +1,32 @@
+[Unit]
+Description=feast-watch mother
+Documentation=https://github.com/osman-yahya/feast-watch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/feast-watch
+EnvironmentFile=/etc/feast-watch/mother.env
+Restart=always
+RestartSec=5
+
+# StateDirectory makes systemd create and own /var/lib/feast-watch, which the
+# mother otherwise expects to exist: store.Open does not create it, so before
+# this the directory was made by hand with whatever ownership the operator
+# happened to use.
+StateDirectory=feast-watch
+User=feast-watch
+Group=feast-watch
+
+# The mother reads one SQLite file and answers HTTP. It has no business
+# anywhere else on the filesystem.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

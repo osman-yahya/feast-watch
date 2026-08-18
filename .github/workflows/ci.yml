@@ -34,7 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck committed scripts
-        run: shellcheck bin/release.sh e2e/*.sh deploy/*.sh 2>/dev/null || shellcheck bin/release.sh e2e/*.sh
+        # mother/api/uninstall.sh is plain shell (not a template) precisely so
+        # it can be linted here — it is the script an operator pipes into bash
+        # on a production host.
+        run: shellcheck bin/release.sh e2e/*.sh deploy/*.sh mother/api/uninstall.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

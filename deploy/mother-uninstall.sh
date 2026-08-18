@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Remove the feast-watch mother installed by deploy/mother-install.sh.
+#
+#   sudo deploy/mother-uninstall.sh              # service and binary; keep data and config
+#   sudo deploy/mother-uninstall.sh --purge      # also remove the database, config and user
+#   sudo deploy/mother-uninstall.sh --dry-run    # print what would be removed
+#
+# Without --purge the database survives, because it is the only copy of every
+# server's history and of every agent token — and a token cannot be reissued,
+# only replaced by reinstalling that agent.
+#
+# Every step is idempotent: this has to finish on a half-installed host, and
+# under `set -euo pipefail` a systemctl call against an absent unit exits
+# non-zero. Each one is guarded rather than blanket-`|| true`'d, so a real
+# failure is still a failure.
+set -euo pipefail
+
+BIN=/usr/local/bin/feast-watch
+CONF_DIR=/etc/feast-watch
+UNIT=/etc/systemd/system/feast-watch-mother.service
+UNIT_NAME=feast-watch-mother.service
+STATE_DIR=/var/lib/feast-watch
+SERVICE_USER=feast-watch
+
+DRY_RUN=0
+
+say() { echo "-> $*"; }
+
+remove() {
+  local path="$1"
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would remove $path"
+    return 0
+  fi
+  rm -rf "$path"
+  say "removed $path"
+}
+
+stop_service() {
+  command -v systemctl >/dev/null 2>&1 || { say "no systemd; skipping service"; return 0; }
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would stop and disable $UNIT_NAME"
+    return 0
+  fi
+  # is-active and is-enabled both exit non-zero for an absent unit, which is
+  # exactly the state a re-run is in — so they gate rather than fail.
+  if systemctl is-active --quiet "$UNIT_NAME"; then
+    systemctl stop "$UNIT_NAME"
+    say "stopped $UNIT_NAME"
+  fi
+  if systemctl is-enabled --quiet "$UNIT_NAME" 2>/dev/null; then
+    systemctl disable "$UNIT_NAME"
+    say "disabled $UNIT_NAME"
+  fi
+}
+
+reload_systemd() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  systemctl daemon-reload
+  # A unit that died before being removed otherwise lingers in
+  # `systemctl --failed` forever.
+  systemctl reset-failed "$UNIT_NAME" 2>/dev/null || true
+}
+
+main() {
+  local purge=0
+  for arg in "$@"; do
+    case "$arg" in
+      --purge) purge=1 ;;
+      --dry-run) DRY_RUN=1 ;;
+      *) echo "unknown option: $arg" >&2; return 2 ;;
+    esac
+  done
+
+  if [ "$DRY_RUN" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+    echo "must run as root" >&2
+    return 1
+  fi
+
+  stop_service
+  remove "$UNIT"
+  reload_systemd
+  remove "$BIN"
+
+  if [ "$purge" -eq 1 ]; then
+    remove "$STATE_DIR"
+    remove "$CONF_DIR"
+    if [ "$DRY_RUN" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+      userdel "$SERVICE_USER"
+      say "removed user $SERVICE_USER"
+    fi
+  else
+    say "kept $STATE_DIR and $CONF_DIR"
+    say "the database holds every server's history and its tokens; pass --purge to remove it"
+  fi
+
+  echo
+  echo "feast-watch mother removed. Agents on monitored hosts keep running and"
+  echo "keep failing their pushes — run feast-watch-agent-uninstall on each."
+}
+
+main "$@"
