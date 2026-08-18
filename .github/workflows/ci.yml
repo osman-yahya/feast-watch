@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: vet
+        run: go vet ./...
+      - name: gofmt
+        # gofmt -l prints the files that need formatting; any output is a failure.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"; echo "$unformatted"; exit 1
+          fi
+      - name: test
+        run: go test -race -cover ./...
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck committed scripts
+        run: shellcheck bin/release.sh e2e/*.sh deploy/*.sh 2>/dev/null || shellcheck bin/release.sh e2e/*.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: shellcheck the rendered install script
+        # install.sh.tmpl is a Go template, so it is not valid shell until
+        # rendered. Render it with placeholder data, then lint the result — the
+        # script is piped into `sudo bash` on every monitored host, so a syntax
+        # error there is a broken install, not a lint nit.
+        run: |
+          go run ./.github/tools/rendertmpl mother/api/install.sh.tmpl /tmp/install.sh
+          bash -n /tmp/install.sh
+          shellcheck /tmp/install.sh
