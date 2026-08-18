@@ -60,13 +60,8 @@ func main() {
 	a := api.New(st, apiKey, env("FW_DOWNLOADS_DIR", "/var/lib/feast-watch/downloads"))
 	a.SetPublicURL(publicURL)
 
-	go func() { // rollup every 30s over the last 10 minutes (idempotent REPLACE)
-		for range time.Tick(30 * time.Second) {
-			if err := st.RollupSince(time.Now().Unix() - 600); err != nil {
-				slog.Error("rollup", "err", err)
-			}
-		}
-	}()
+	// No rollup job: ingest folds each push into both tiers as it arrives
+	// (store.ApplySamples), so there is nothing to recompute on a timer.
 	go func() { // retention hourly
 		for range time.Tick(time.Hour) {
 			cfg, err := st.GetSettings()

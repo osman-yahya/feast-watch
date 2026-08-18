@@ -9,17 +9,20 @@ import (
 //
 // Agent version rollout deliberately lives on the server row rather than here:
 // see Store.SetDesiredVersion.
+// retention_raw_hours is deliberately absent: there is no raw tier left for it
+// to bound (see schema.go). The key is dropped from stored settings by
+// migration and ignored on the way in, so an older caller still sending it is
+// not rejected — it simply no longer describes anything.
 type Settings struct {
 	Interval               int `json:"interval"`
 	HeartbeatMissThreshold int `json:"heartbeat_miss_threshold"`
-	RetentionRawHours      int `json:"retention_raw_hours"`
 	Retention1mDays        int `json:"retention_1m_days"`
 	Retention1hDays        int `json:"retention_1h_days"`
 }
 
 var defaultSettings = Settings{
 	Interval: 10, HeartbeatMissThreshold: 3,
-	RetentionRawHours: 48, Retention1mDays: 15, Retention1hDays: 75,
+	Retention1mDays: 15, Retention1hDays: 75,
 }
 
 func (s *Store) GetSettings() (Settings, error) {
@@ -47,8 +50,6 @@ func (s *Store) GetSettings() (Settings, error) {
 			out.Interval = n
 		case "heartbeat_miss_threshold":
 			out.HeartbeatMissThreshold = n
-		case "retention_raw_hours":
-			out.RetentionRawHours = n
 		case "retention_1m_days":
 			out.Retention1mDays = n
 		case "retention_1h_days":
@@ -62,7 +63,6 @@ func (s *Store) SaveSettings(in Settings) error {
 	pairs := map[string]string{
 		"interval":                 strconv.Itoa(in.Interval),
 		"heartbeat_miss_threshold": strconv.Itoa(in.HeartbeatMissThreshold),
-		"retention_raw_hours":      strconv.Itoa(in.RetentionRawHours),
 		"retention_1m_days":        strconv.Itoa(in.Retention1mDays),
 		"retention_1h_days":        strconv.Itoa(in.Retention1hDays),
 	}

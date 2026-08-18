@@ -108,10 +108,7 @@ func TestDeleteServerPurgesRollupHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertSamples(a.ID, 1700000000, map[string]float64{"cpu.usage": 42}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RollupSince(1700000000); err != nil {
+	if err := s.ApplySamples(a.ID, 1700000000, map[string]float64{"cpu.usage": 42}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -89,8 +89,13 @@ func TestMigrationMovesGlobalDesiredVersionOntoServers(t *testing.T) {
 		`INSERT INTO settings (key, value) VALUES ('desired_version', 'v1.3.0')`); err != nil {
 		t.Fatal(err)
 	}
+	// Rewind to just before this migration, which is the state a database
+	// written by the release that still had the fleet-wide setting is in.
+	if _, err := s.db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
 
-	if err := migrate(s.db); err != nil {
+	if _, err := migrate(s.db); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,14 +112,24 @@ func TestMigrationMovesGlobalDesiredVersionOntoServers(t *testing.T) {
 	}
 }
 
+// Migrations are gated on PRAGMA user_version, so a second start applies
+// nothing. Re-running them anyway must still be harmless: a rewound version is
+// how a restored backup or a rolled-back binary presents itself.
 func TestMigrationIsIdempotent(t *testing.T) {
 	s := open(t)
 	srv, _ := s.AddServer("web-1")
 	s.SetDesiredVersion(srv.ID, "v2.0.0")
 
-	if err := migrate(s.db); err != nil {
+	if _, err := migrate(s.db); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate(s.db); err != nil {
+		t.Fatalf("re-running every migration must be safe: %v", err)
+	}
+
 	got, _ := s.ServerByID(srv.ID)
 	if got.DesiredVersion != "v2.0.0" {
 		t.Fatalf("re-running the migration changed a per-server target: %q", got.DesiredVersion)

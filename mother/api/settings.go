@@ -22,11 +22,9 @@ const (
 	minHeartbeatMiss = 1
 	maxHeartbeatMiss = 100
 
-	// maxRetentionRawHours / maxRetentionDays exist to catch a fat-fingered
-	// value that would keep history effectively forever, not to express a
-	// storage policy.
-	maxRetentionRawHours = 24 * 365
-	maxRetentionDays     = 3650
+	// maxRetentionDays exists to catch a fat-fingered value that would keep
+	// history effectively forever, not to express a storage policy.
+	maxRetentionDays = 3650
 )
 
 func (a *API) registerSettings(mux *http.ServeMux) {
@@ -43,9 +41,14 @@ func (a *API) registerSettings(mux *http.ServeMux) {
 type settingsPayload struct {
 	Interval               *int `json:"interval"`
 	HeartbeatMissThreshold *int `json:"heartbeat_miss_threshold"`
-	RetentionRawHours      *int `json:"retention_raw_hours"`
 	Retention1mDays        *int `json:"retention_1m_days"`
 	Retention1hDays        *int `json:"retention_1h_days"`
+
+	// RetentionRawHours is accepted and ignored. There is no raw tier left for
+	// it to bound, but an older panel or proxy still sends it, and rejecting
+	// their payload would break settings entirely while they catch up. It is
+	// deliberately not in the required set below.
+	RetentionRawHours *int `json:"retention_raw_hours"`
 }
 
 // bounds names the inclusive range each field must fall in.
@@ -59,7 +62,6 @@ func (p settingsPayload) fields() []bounds {
 	return []bounds{
 		{"interval", p.Interval, minInterval, maxInterval},
 		{"heartbeat_miss_threshold", p.HeartbeatMissThreshold, minHeartbeatMiss, maxHeartbeatMiss},
-		{"retention_raw_hours", p.RetentionRawHours, 1, maxRetentionRawHours},
 		{"retention_1m_days", p.Retention1mDays, 1, maxRetentionDays},
 		{"retention_1h_days", p.Retention1hDays, 1, maxRetentionDays},
 	}
@@ -81,7 +83,6 @@ func (p settingsPayload) validate() (store.Settings, string) {
 	return store.Settings{
 		Interval:               *p.Interval,
 		HeartbeatMissThreshold: *p.HeartbeatMissThreshold,
-		RetentionRawHours:      *p.RetentionRawHours,
 		Retention1mDays:        *p.Retention1mDays,
 		Retention1hDays:        *p.Retention1hDays,
 	}, ""

@@ -128,7 +128,7 @@ func TestUpdateCollectorsAndDeleteHistory(t *testing.T) {
 		t.Fatalf("collectors: %v", got.Collectors)
 	}
 
-	st.InsertSamples(srv.ID, 1700000000, map[string]float64{"cpu.usage": 1})
+	st.ApplySamples(srv.ID, 1700000000, map[string]float64{"cpu.usage": 1})
 	w = adminReq(t, a.Handler(), http.MethodDelete,
 		fmt.Sprintf("/api/history?server_id=%d&from=0&to=2000000000", srv.ID), "")
 	if w.Code != http.StatusOK {
@@ -213,11 +213,10 @@ func TestSetCollectorsAcceptsCollectorOutsideCapabilities(t *testing.T) {
 // the full key set, so the exposure is any scripted or direct caller.
 func TestSettingsRejectPartialPayload(t *testing.T) {
 	cases := map[string]string{
-		"missing retention_raw_hours": `{"interval":10,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75}`,
-		"missing retention_1m_days":   `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1h_days":75}`,
-		"missing retention_1h_days":   `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15}`,
-		"missing interval":            `{"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75}`,
-		"empty object":                `{}`,
+		"missing retention_1m_days": `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1h_days":75}`,
+		"missing retention_1h_days": `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15}`,
+		"missing interval":          `{"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75}`,
+		"empty object":              `{}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -240,7 +239,6 @@ func TestSettingsRejectPartialPayload(t *testing.T) {
 // silently becoming "delete everything".
 func TestSettingsRejectNonPositiveRetention(t *testing.T) {
 	for _, body := range []string{
-		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":0,"retention_1m_days":15,"retention_1h_days":75}`,
 		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":-1,"retention_1h_days":75}`,
 		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":0}`,
 	} {
@@ -265,7 +263,7 @@ func TestSettingsAcceptCompletePayload(t *testing.T) {
 	}
 	got, _ := st.GetSettings()
 	want := store.Settings{Interval: 20, HeartbeatMissThreshold: 4,
-		RetentionRawHours: 24, Retention1mDays: 7, Retention1hDays: 90}
+		Retention1mDays: 7, Retention1hDays: 90}
 	if got != want {
 		t.Fatalf("stored %+v want %+v", got, want)
 	}

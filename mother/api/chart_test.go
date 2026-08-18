@@ -19,11 +19,10 @@ func TestChartReadsRollupsAndGroups(t *testing.T) {
 	srv, _ := st.AddServer("web-1")
 	base := int64(1700000000) - 1700000000%3600
 
-	// two minutes of raw data → rollup
+	// two minutes of pushes, folded into the rollups as they arrive
 	for i := int64(0); i < 12; i++ { // 12 × 10s across 2 minutes
-		st.InsertSamples(srv.ID, base+i*10, map[string]float64{"cpu.usage": float64(10 + i)})
+		st.ApplySamples(srv.ID, base+i*10, map[string]float64{"cpu.usage": float64(10 + i)})
 	}
-	st.RollupSince(base)
 
 	// interval=120 → grouped from rollup_1m into one 2-minute bucket
 	w := adminReq(t, a.Handler(), http.MethodGet,

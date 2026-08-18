@@ -92,3 +92,23 @@ Targets are per server on purpose — update one host, confirm it, then the rest
 The mother is not self-updating: `GET /api/version` reports its version so you
 can see what the agents should catch up to, but deploying it stays with
 systemd/Docker/k8s.
+
+## Storage
+
+Every push is folded straight into the 1-minute and 1-hour rollups as it
+arrives. There is no raw sample tier and no background rollup job: nothing ever
+read the raw rows except the job that reduced them, and the chart API floors its
+interval at 60 seconds, so the 10-second resolution was unreachable through any
+endpoint. At 50 servers this takes daily row-writes from roughly 32M to 4M.
+
+Upgrading an existing mother is automatic. On first start it rebuilds both
+rollup tables — carrying `avg` across as `avg*cnt`, which is the same weighted
+total the chart query already computed on read — drops the raw table, and runs
+one `VACUUM` to hand the freed pages back. On the repo's own sample database
+that took 471 KB to 74 KB with every stored value preserved. The rebuild copies
+both tables, so allow for a slow first start on a large database and take a
+backup first.
+
+`retention_raw_hours` is gone from the settings payload. It is still accepted
+and ignored on the way in, so an older panel or proxy is not rejected while it
+catches up.

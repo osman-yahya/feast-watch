@@ -6,7 +6,7 @@ import (
 )
 
 // maxChartPoints bounds every chart response — the frontend can never receive
-// more, regardless of range. Raw `samples` are NEVER queried here (spec).
+// more, regardless of range. Only the rollup tiers exist to query.
 const (
 	maxChartPoints      = 500
 	minChartInterval    = 60
@@ -51,7 +51,7 @@ func (a *API) handleChart(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.st.DB().Query(`
 		SELECT (window_start/?)*? AS bucket,
-		       MIN(min), MAX(max), SUM(avg*cnt)/SUM(cnt)
+		       MIN(min), MAX(max), SUM(sum)/SUM(cnt)
 		FROM `+table+`
 		WHERE server_id = ? AND metric = ? AND window_start BETWEEN ? AND ?
 		GROUP BY bucket ORDER BY bucket`,

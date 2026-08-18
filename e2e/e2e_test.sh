@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end: mother + 2 agents via compose; asserts push → status → rollup → chart.
+# End-to-end: mother + 2 agents via compose; asserts push → status → chart.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,9 +28,11 @@ echo "-> both servers must be online"
 STATUSES=$(curl -sf -H "$KEY" "$API/api/servers" | python3 -c 'import sys,json;print(",".join(sorted(s["status"] for s in json.load(sys.stdin)["data"])))')
 [ "$STATUSES" = "online,online" ] || { echo "FAIL: statuses=$STATUSES"; exit 1; }
 
-echo "-> chart must return rollup points (never raw)"
+echo "-> chart must return rollup points"
 SID=$(curl -sf -H "$KEY" "$API/api/servers" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["id"])')
-sleep 45  # let the 30s rollup ticker fire
+# Ingest folds each push into both rollup tiers as it arrives, so there is no
+# background job to wait for — only enough pushes to fill a minute bucket.
+sleep 15
 NOW=$(date +%s)
 POINTS=$(curl -sf -H "$KEY" "$API/api/chart?server_id=$SID&metric=cpu.usage&from=$((NOW-600))&to=$NOW&interval=60" \
   | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["data"]))')
