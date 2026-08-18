@@ -151,3 +151,24 @@ sudo deploy/mother-install.sh bin/build/feast-watch
 # edit /etc/feast-watch/mother.env, then:
 sudo systemctl start feast-watch-mother
 ```
+
+## Mother and agent on the same host
+
+This is the deployment the architecture assumes — the mother monitors its own
+host — and it is one command:
+
+```bash
+bin/release.sh v1.3.0
+sudo deploy/mother-install.sh --with-agent bin/build/feast-watch
+```
+
+It installs and starts the mother, registers this host under its own hostname,
+and installs the agent from the binary just built beside the mother. Nothing is
+downloaded, so this works before any release has been published — unlike the
+served one-liner, which fetches the agent from a GitHub release.
+
+The two share `/etc/feast-watch` but nothing else: separate binaries, separate
+units, separate config files. Each uninstaller removes only its own files and
+drops the shared directory only once it is empty, so removing one does not take
+the other's API key or token with it. `e2e/colocation_test.sh` asserts exactly
+that.

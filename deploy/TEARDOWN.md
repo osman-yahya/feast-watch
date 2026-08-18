@@ -43,6 +43,19 @@ Without `--purge` the database survives. It holds every server's history **and
 every agent's token**; losing it means reinstalling every agent, not just
 restoring a backup of some metrics.
 
+## When both live on one host
+
+The mother monitors its own host, so `/etc/feast-watch` usually holds
+`mother.env` **and** `agent.conf`. Each uninstaller removes only the files it
+installed and drops the shared directory only when nothing is left in it:
+
+- removing the agent keeps `mother.env` — the mother's API key
+- removing the mother keeps `agent.conf` — the agent's token, which no endpoint
+  reissues
+
+Order is unchanged: uninstall the agent, delete the server in the panel, then
+uninstall the mother.
+
 ## Docker (local development)
 
 ```bash

@@ -16,11 +16,15 @@
 # failure is still a failure.
 set -euo pipefail
 
-BIN=/usr/local/bin/feast-watch-agent
-CONF_DIR=/etc/feast-watch
-UNIT=/etc/systemd/system/feast-watch-agent.service
+# FW_ROOT prefixes every path. It is empty in production; the co-location test
+# sets it to a temp tree so this script can be exercised without being root.
+FW_ROOT="${FW_ROOT:-}"
+
+BIN="$FW_ROOT/usr/local/bin/feast-watch-agent"
+CONF_DIR="$FW_ROOT/etc/feast-watch"
+UNIT="$FW_ROOT/etc/systemd/system/feast-watch-agent.service"
 UNIT_NAME=feast-watch-agent.service
-SELF=/usr/local/sbin/feast-watch-agent-uninstall
+SELF="$FW_ROOT/usr/local/sbin/feast-watch-agent-uninstall"
 
 DRY_RUN=0
 
@@ -55,6 +59,21 @@ stop_service() {
   fi
 }
 
+# prune_conf_dir removes the shared config directory only when nothing else
+# lives in it, so a co-installed mother keeps its own configuration.
+prune_conf_dir() {
+  [ -d "$CONF_DIR" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would remove $CONF_DIR if empty"
+    return 0
+  fi
+  if rmdir "$CONF_DIR" 2>/dev/null; then
+    say "removed $CONF_DIR"
+  else
+    say "kept $CONF_DIR — it still holds files (a mother on this host?)"
+  fi
+}
+
 reload_systemd() {
   command -v systemctl >/dev/null 2>&1 || return 0
   [ "$DRY_RUN" -eq 1 ] && return 0
@@ -78,7 +97,9 @@ main() {
     esac
   done
 
-  if [ "$DRY_RUN" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+  # Root is required for the real paths only. With FW_ROOT set we are acting on
+  # a test tree, not the system.
+  if [ "$DRY_RUN" -eq 0 ] && [ -z "$FW_ROOT" ] && [ "$(id -u)" -ne 0 ]; then
     echo "must run as root" >&2
     return 1
   fi
@@ -95,9 +116,15 @@ main() {
   done
 
   if [ "$purge" -eq 1 ]; then
-    remove "$CONF_DIR"
+    # Only this agent's own files. The mother may be installed on this same
+    # host — the design expects it to monitor itself — and it keeps mother.env
+    # in this very directory. Removing the directory wholesale would take the
+    # mother's API key with it and kill it on its next restart.
+    remove "$CONF_DIR/agent.conf"
+    remove "$CONF_DIR/install-manifest"
+    prune_conf_dir
   else
-    say "kept $CONF_DIR (pass --purge to remove it, including the token)"
+    say "kept $CONF_DIR (pass --purge to remove the config, including the token)"
   fi
 
   # Removed last: it is the file currently executing. bash has already read the

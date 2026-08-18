@@ -15,11 +15,15 @@
 # failure is still a failure.
 set -euo pipefail
 
-BIN=/usr/local/bin/feast-watch
-CONF_DIR=/etc/feast-watch
-UNIT=/etc/systemd/system/feast-watch-mother.service
+# FW_ROOT prefixes every path. It is empty in production; the co-location test
+# sets it to a temp tree so this script can be exercised without being root.
+FW_ROOT="${FW_ROOT:-}"
+
+BIN="$FW_ROOT/usr/local/bin/feast-watch"
+CONF_DIR="$FW_ROOT/etc/feast-watch"
+UNIT="$FW_ROOT/etc/systemd/system/feast-watch-mother.service"
 UNIT_NAME=feast-watch-mother.service
-STATE_DIR=/var/lib/feast-watch
+STATE_DIR="$FW_ROOT/var/lib/feast-watch"
 SERVICE_USER=feast-watch
 
 DRY_RUN=0
@@ -55,6 +59,21 @@ stop_service() {
   fi
 }
 
+# prune_conf_dir removes the shared config directory only when nothing else
+# lives in it, so a co-installed agent keeps its token.
+prune_conf_dir() {
+  [ -d "$CONF_DIR" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would remove $CONF_DIR if empty"
+    return 0
+  fi
+  if rmdir "$CONF_DIR" 2>/dev/null; then
+    say "removed $CONF_DIR"
+  else
+    say "kept $CONF_DIR — it still holds files (an agent on this host?)"
+  fi
+}
+
 reload_systemd() {
   command -v systemctl >/dev/null 2>&1 || return 0
   [ "$DRY_RUN" -eq 1 ] && return 0
@@ -74,7 +93,9 @@ main() {
     esac
   done
 
-  if [ "$DRY_RUN" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+  # Root is required for the real paths only. With FW_ROOT set we are acting on
+  # a test tree, not the system.
+  if [ "$DRY_RUN" -eq 0 ] && [ -z "$FW_ROOT" ] && [ "$(id -u)" -ne 0 ]; then
     echo "must run as root" >&2
     return 1
   fi
@@ -86,7 +107,12 @@ main() {
 
   if [ "$purge" -eq 1 ]; then
     remove "$STATE_DIR"
-    remove "$CONF_DIR"
+    # Only the mother's own files. An agent is expected to run on this same
+    # host — the mother monitors itself — and its agent.conf lives in this very
+    # directory, holding a token that no endpoint reissues.
+    remove "$CONF_DIR/mother.env"
+    remove "$CONF_DIR/mother-manifest"
+    prune_conf_dir
     if [ "$DRY_RUN" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
       userdel "$SERVICE_USER"
       say "removed user $SERVICE_USER"

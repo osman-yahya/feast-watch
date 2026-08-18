@@ -2,6 +2,14 @@
 # Install the feast-watch mother as a systemd service.
 #
 #   sudo deploy/mother-install.sh /path/to/feast-watch
+#   sudo deploy/mother-install.sh --with-agent /path/to/feast-watch
+#
+# --with-agent also installs an agent on this same host, pointed at the mother
+# it just installed. That is the deployment the design assumes — the mother
+# monitors its own host — and doing it here avoids the chicken-and-egg of the
+# served installer, which downloads the agent from a published GitHub release:
+# on this host the binary was just built beside the mother, so nothing is
+# fetched and no release has to exist yet.
 #
 # Run from a checkout after `bin/release.sh`, or pass the binary explicitly.
 # Everything this creates is listed in /etc/feast-watch/mother-manifest and is
@@ -13,11 +21,19 @@
 # operator improvised — and nothing could be cleanly removed.
 set -euo pipefail
 
-BIN_DEST=/usr/local/bin/feast-watch
-CONF_DIR=/etc/feast-watch
+# FW_ROOT prefixes every path. Empty in production; the co-location test sets
+# it to a temp tree so this script can be exercised without being root.
+FW_ROOT="${FW_ROOT:-}"
+
+BIN_DEST="$FW_ROOT/usr/local/bin/feast-watch"
+AGENT_BIN_DEST="$FW_ROOT/usr/local/bin/feast-watch-agent"
+CONF_DIR="$FW_ROOT/etc/feast-watch"
 ENV_FILE="$CONF_DIR/mother.env"
-UNIT=/etc/systemd/system/feast-watch-mother.service
+AGENT_CONF="$CONF_DIR/agent.conf"
+UNIT="$FW_ROOT/etc/systemd/system/feast-watch-mother.service"
 UNIT_NAME=feast-watch-mother.service
+AGENT_UNIT="$FW_ROOT/etc/systemd/system/feast-watch-agent.service"
+AGENT_UNIT_NAME=feast-watch-agent.service
 SERVICE_USER=feast-watch
 
 seed_env_file() {
@@ -52,8 +68,65 @@ write_manifest() {
   chmod 0644 "$CONF_DIR/mother-manifest"
 }
 
+# install_local_agent registers this host with the mother it was just given and
+# installs the agent from the locally built binary.
+#
+# The mother has to be running first: the token comes from `feast-watch
+# generate`, which writes to the same database the service owns, and SQLite
+# takes a single writer.
+install_local_agent() {
+  local source_dir="$1" name
+  name="$(hostname -s 2>/dev/null || hostname)"
+
+  local agent_src="$source_dir/feast-watch-agent"
+  [ -f "$agent_src" ] || { echo "agent binary not found at $agent_src — run bin/release.sh first" >&2; return 1; }
+
+  echo "-> registering this host as '$name'"
+  # generate is create-or-fetch, so re-running the installer does not mint a
+  # second server for the same host.
+  local token
+  token=$(FW_DB_PATH="$FW_ROOT/var/lib/feast-watch/mother.db" \
+          "$BIN_DEST" generate --name="$name" |
+          sed -n 's|.*/install/\(tk_[0-9a-f]*\)\.sh.*|\1|p')
+  [ -n "$token" ] || { echo "could not read a token from feast-watch generate" >&2; return 1; }
+
+  echo "-> installing agent binary"
+  install -m 0755 "$agent_src" "$AGENT_BIN_DEST"
+
+  if [ -f "$AGENT_CONF" ]; then
+    echo "   kept existing $AGENT_CONF"
+  else
+    # The mother is reached over the loopback: the agent is on the same host,
+    # so its traffic never needs to leave it whatever FW_PUBLIC_URL says.
+    local listen port
+    listen=$(sed -n 's/^FW_LISTEN=//p' "$ENV_FILE")
+    port="${listen##*:}"
+    {
+      echo "MOTHER_URL=http://127.0.0.1:${port:-8443}"
+      echo "TOKEN=$token"
+      echo "SERVER_NAME=$name"
+    } > "$AGENT_CONF"
+    chmod 0600 "$AGENT_CONF"
+    echo "   wrote $AGENT_CONF"
+  fi
+
+  echo "-> installing agent unit"
+  install -m 0644 "$(dirname "$0")/feast-watch-agent.service" "$AGENT_UNIT"
+  systemctl daemon-reload
+  systemctl enable --now "$AGENT_UNIT_NAME"
+}
+
 main() {
-  local source="${1:-$(dirname "$0")/../bin/build/feast-watch}"
+  local with_agent=0
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --with-agent) with_agent=1 ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+
+  local source="${args[0]:-$(dirname "$0")/../bin/build/feast-watch}"
 
   [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; return 1; }
   [ -f "$source" ] || { echo "mother binary not found at $source" >&2; return 1; }
@@ -81,6 +154,18 @@ main() {
 
   systemctl daemon-reload
   systemctl enable "$UNIT_NAME"
+
+  if [ "$with_agent" -eq 1 ]; then
+    echo
+    echo "-> starting the mother so it can mint this host's token"
+    systemctl start "$UNIT_NAME"
+    install_local_agent "$(dirname "$source")"
+    echo
+    echo "mother and agent installed. Edit $ENV_FILE (API key, public URL), then:"
+    echo "  systemctl restart $UNIT_NAME"
+    return 0
+  fi
+
   echo
   echo "installed. Edit $ENV_FILE, then: systemctl start $UNIT_NAME"
 }
