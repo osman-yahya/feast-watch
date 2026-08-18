@@ -1,6 +1,9 @@
 package store
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 // Settings are the panel-configurable knobs (spec: "Configurable from the panel").
 //
@@ -32,7 +35,13 @@ func (s *Store) GetSettings() (Settings, error) {
 		if err := rows.Scan(&k, &v); err != nil {
 			return Settings{}, err
 		}
-		n, _ := strconv.Atoi(v)
+		// A non-numeric value must not read as 0: every retention field feeds
+		// a `now - value` cutoff, so silently reading 0 would turn the next
+		// sweep into "delete this whole tier".
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Settings{}, fmt.Errorf("setting %q holds a non-numeric value %q: %w", k, v, err)
+		}
 		switch k {
 		case "interval":
 			out.Interval = n

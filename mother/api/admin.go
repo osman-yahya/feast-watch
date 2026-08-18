@@ -24,8 +24,6 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/servers", a.requireAPIKey(a.handleAddServer))
 	mux.HandleFunc("DELETE /api/servers/{id}", a.requireAPIKey(a.handleDeleteServer))
 	mux.HandleFunc("PUT /api/servers/{id}/collectors", a.requireAPIKey(a.handleSetCollectors))
-	mux.HandleFunc("GET /api/settings", a.requireAPIKey(a.handleGetSettings))
-	mux.HandleFunc("PUT /api/settings", a.requireAPIKey(a.handlePutSettings))
 	mux.HandleFunc("DELETE /api/history", a.requireAPIKey(a.handleDeleteHistory))
 }
 
@@ -161,38 +159,6 @@ func (a *API) handleSetCollectors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nil, "")
-}
-
-func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := a.st.GetSettings()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
-		return
-	}
-	writeJSON(w, http.StatusOK, s, "")
-}
-
-func (a *API) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	var in store.Settings
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, nil, "malformed settings")
-		return
-	}
-	// Interval floor of 2s matches the ingest rate limit (minPushGap): a 1s
-	// interval would make every other push a 429 and flap server status.
-	if in.Interval < 2 {
-		writeJSON(w, http.StatusBadRequest, nil, "interval must be >= 2 seconds")
-		return
-	}
-	if in.HeartbeatMissThreshold < 1 {
-		writeJSON(w, http.StatusBadRequest, nil, "heartbeat threshold must be >= 1")
-		return
-	}
-	if err := a.st.SaveSettings(in); err != nil {
-		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
-		return
-	}
-	writeJSON(w, http.StatusOK, in, "")
 }
 
 func (a *API) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {

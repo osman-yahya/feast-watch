@@ -59,7 +59,8 @@ func (a *API) SetAgentTLSSkipVerify(skip bool) { a.agentTLSSkipVerify = skip }
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/ingest", a.handleIngest)
-	a.registerAdmin(mux)   // Task 11
+	a.registerAdmin(mux) // Task 11
+	a.registerSettings(mux)
 	a.registerChart(mux)   // Task 12
 	a.registerInstall(mux) // Task 13
 	a.registerVersions(mux)

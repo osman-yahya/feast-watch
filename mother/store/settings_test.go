@@ -27,3 +27,17 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("got %+v want %+v", got, in)
 	}
 }
+
+// A stored value that is not a number must not read as zero: every retention
+// field feeds a `now - value` cutoff, so a corrupt row would silently turn the
+// next sweep into "delete the whole tier".
+func TestSettingsRejectCorruptStoredValue(t *testing.T) {
+	s := open(t)
+	if _, err := s.DB().Exec(
+		`INSERT INTO settings (key, value) VALUES ('retention_1m_days', 'not-a-number')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSettings(); err == nil {
+		t.Fatal("a non-numeric stored setting must surface as an error, not as 0")
+	}
+}

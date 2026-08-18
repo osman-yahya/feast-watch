@@ -205,3 +205,68 @@ func TestSetCollectorsAcceptsCollectorOutsideCapabilities(t *testing.T) {
 		t.Fatalf("collectors = %v", got.Collectors)
 	}
 }
+
+// A settings PUT that omits a retention field must be rejected, not stored as
+// zero. Storing zero makes the next retention sweep compute a cutoff of
+// `now - 0` and delete every row in that tier for every server — fifteen days
+// of 1-minute history destroyed by a partial payload. The panel always sends
+// the full key set, so the exposure is any scripted or direct caller.
+func TestSettingsRejectPartialPayload(t *testing.T) {
+	cases := map[string]string{
+		"missing retention_raw_hours": `{"interval":10,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75}`,
+		"missing retention_1m_days":   `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1h_days":75}`,
+		"missing retention_1h_days":   `{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15}`,
+		"missing interval":            `{"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":75}`,
+		"empty object":                `{}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			a, st := setup(t)
+			before, _ := st.GetSettings()
+
+			w := adminReq(t, a.Handler(), http.MethodPut, "/api/settings", body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("partial settings must 400, got %d %s", w.Code, w.Body)
+			}
+			if after, _ := st.GetSettings(); after != before {
+				t.Fatalf("rejected payload must not be stored: before %+v after %+v", before, after)
+			}
+		})
+	}
+}
+
+// Retention values are what stand between the stored history and a DELETE, so
+// a zero or negative value has to be refused at the boundary rather than
+// silently becoming "delete everything".
+func TestSettingsRejectNonPositiveRetention(t *testing.T) {
+	for _, body := range []string{
+		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":0,"retention_1m_days":15,"retention_1h_days":75}`,
+		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":-1,"retention_1h_days":75}`,
+		`{"interval":10,"heartbeat_miss_threshold":3,"retention_raw_hours":48,"retention_1m_days":15,"retention_1h_days":0}`,
+	} {
+		w := func() *httptest.ResponseRecorder {
+			a, _ := setup(t)
+			return adminReq(t, a.Handler(), http.MethodPut, "/api/settings", body)
+		}()
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("non-positive retention must 400, got %d for %s", w.Code, body)
+		}
+	}
+}
+
+// A complete, valid payload must still round-trip — the guard above must not
+// be so strict that the panel's own save stops working.
+func TestSettingsAcceptCompletePayload(t *testing.T) {
+	a, st := setup(t)
+	w := adminReq(t, a.Handler(), http.MethodPut, "/api/settings",
+		`{"interval":20,"heartbeat_miss_threshold":4,"retention_raw_hours":24,"retention_1m_days":7,"retention_1h_days":90}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete settings must succeed, got %d %s", w.Code, w.Body)
+	}
+	got, _ := st.GetSettings()
+	want := store.Settings{Interval: 20, HeartbeatMissThreshold: 4,
+		RetentionRawHours: 24, Retention1mDays: 7, Retention1hDays: 90}
+	if got != want {
+		t.Fatalf("stored %+v want %+v", got, want)
+	}
+}
