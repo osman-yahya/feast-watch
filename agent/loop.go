@@ -45,8 +45,9 @@ func NewLoop(cfg Config, reg *collectors.Registry) *Loop {
 	return NewLoopWithClient(cfg, reg, &http.Client{Timeout: 5 * time.Second})
 }
 
-// NewLoopWithClient lets the caller supply a client with custom TLS trust
-// (built via Config.HTTPClient) — required when the mother uses an internal CA.
+// NewLoopWithClient lets the caller supply the client (built via
+// Config.HTTPClient), so the push loop and the self-update share one timeout
+// policy instead of each inventing its own.
 func NewLoopWithClient(cfg Config, reg *collectors.Registry, client *http.Client) *Loop {
 	return &Loop{
 		cfg: cfg, reg: reg,

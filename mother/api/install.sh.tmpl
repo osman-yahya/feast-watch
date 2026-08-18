@@ -33,7 +33,7 @@ download_agent() {
   # This installer is bash + systemd, so the target is always Linux. The GOOS is
   # part of the name because the mother also serves builds for other operating
   # systems, and an arch alone does not identify a runnable binary.
-  curl -fsSLk "$MOTHER_URL/download/agent/latest-linux-$arch" -o "$dest"
+  curl -fsSL "$MOTHER_URL/download/agent/latest-linux-$arch" -o "$dest"
   chmod 0755 "$dest"
 }
 
@@ -43,8 +43,7 @@ write_config() {
 MOTHER_URL=$MOTHER_URL
 TOKEN=$TOKEN
 SERVER_NAME=$SERVER_NAME
-{{if .TLSSkipVerify}}TLS_SKIP_VERIFY=true
-{{end}}EOF
+EOF
   chmod 0600 /etc/feast-watch/agent.conf
 }
 

@@ -28,10 +28,9 @@ func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript")
 	if err := installTmpl.Execute(w, map[string]any{
-		"MotherURL":     a.scheme + "://" + a.publicAddr,
-		"Token":         srv.Token,
-		"ServerName":    srv.Name,
-		"TLSSkipVerify": a.agentTLSSkipVerify,
+		"MotherURL":  a.publicURL,
+		"Token":      srv.Token,
+		"ServerName": srv.Name,
 	}); err != nil {
 		// Headers are already sent at this point; nothing left to do but log.
 		slog.Error("render install script", "err", err)

@@ -14,7 +14,7 @@ import (
 
 func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
 	a, st := setup(t)
-	a.SetPublicAddr("10.0.0.1:8443")
+	a.SetPublicURL("http://10.0.0.1:8443")
 	srv, _ := st.AddServer("DB_Sunucusu")
 
 	r := httptest.NewRequest(http.MethodGet, "/install/"+srv.Token+".sh", nil)
@@ -24,7 +24,7 @@ func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"MOTHER_URL=https://10.0.0.1:8443", "TOKEN=" + srv.Token, `SERVER_NAME="DB_Sunucusu"`, "systemctl"} {
+	for _, want := range []string{"MOTHER_URL=http://10.0.0.1:8443", "TOKEN=" + srv.Token, `SERVER_NAME="DB_Sunucusu"`, "systemctl"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("script missing %q:\n%s", want, body)
 		}
@@ -77,52 +77,60 @@ func fetchInstallScript(t *testing.T, a *API, st *store.Store, name string) stri
 	return w.Body.String()
 }
 
-// A mother served without TLS must not hand agents an https:// URL it never
-// listens on — the installed agent would fail every push.
-func TestInstallScriptRendersSchemeFromMother(t *testing.T) {
-	a, st := setup(t)
-	a.SetPublicAddr("10.0.0.1:8443")
-	a.SetScheme("http")
+// A freshly constructed API must not be able to hand agents a scheme the
+// mother does not serve. There is no setter that raises the scheme on its own:
+// the whole URL is supplied or the plain-HTTP default stands.
+func TestInstallScriptDefaultsToPlainHTTP(t *testing.T) {
+	st, _ := store.Open(":memory:")
+	t.Cleanup(func() { st.Close() })
+	a := New(st, "adminkey", t.TempDir())
 
-	body := fetchInstallScript(t, a, st, "Plain_HTTP")
-	if !strings.Contains(body, "MOTHER_URL=http://10.0.0.1:8443") {
-		t.Fatalf("script must use the mother's own scheme:\n%s", body)
+	body := fetchInstallScript(t, a, st, "Default_Mother")
+	if !strings.Contains(body, "MOTHER_URL=http://127.0.0.1:8443") {
+		t.Fatalf("default must be plain HTTP:\n%s", body)
 	}
-	if strings.Contains(body, "https://10.0.0.1:8443") {
-		t.Fatalf("script must not hardcode https:\n%s", body)
-	}
-}
-
-// With a self-signed certificate the mother must tell the agent to skip
-// verification; install.sh is the only channel that reaches agent.conf.
-func TestInstallScriptEmitsTLSSkipVerify(t *testing.T) {
-	a, st := setup(t)
-	a.SetPublicAddr("10.0.0.1:8443")
-	a.SetAgentTLSSkipVerify(true)
-
-	body := fetchInstallScript(t, a, st, "Self_Signed")
-	if !strings.Contains(body, "TLS_SKIP_VERIFY=true") {
-		t.Fatalf("script must write TLS_SKIP_VERIFY into agent.conf:\n%s", body)
+	if strings.Contains(body, "https://") {
+		t.Fatalf("nothing may render an https URL by default:\n%s", body)
 	}
 }
 
-// Default (a publicly-trusted cert) must not weaken the agent's trust.
-func TestInstallScriptOmitsTLSSkipVerifyByDefault(t *testing.T) {
+// The mother serves plain HTTP, so the agent has no TLS knobs left to be told
+// about. A leftover TLS_SKIP_VERIFY in a generated config would be an
+// instruction to trust anything, carried to a host that never needs it.
+func TestInstallScriptNeverWeakensTLS(t *testing.T) {
 	a, st := setup(t)
-	a.SetPublicAddr("10.0.0.1:8443")
+	a.SetPublicURL("http://10.0.0.1:8443")
 
-	body := fetchInstallScript(t, a, st, "Trusted_Cert")
-	if strings.Contains(body, "TLS_SKIP_VERIFY") {
-		t.Fatalf("script must not disable verification unless asked:\n%s", body)
+	body := fetchInstallScript(t, a, st, "No_TLS_Knobs")
+	for _, forbidden := range []string{"TLS_SKIP_VERIFY", "CA_FILE", "curl -sSLk", "-fsSLk"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("installer must not carry %q:\n%s", forbidden, body)
+		}
 	}
 }
 
-func TestInstallCommandUsesScheme(t *testing.T) {
-	if got := InstallCommand("http", "10.0.0.1:8443", "tk_abc"); got != "curl -sSLk http://10.0.0.1:8443/install/tk_abc.sh | sudo bash" {
-		t.Fatalf("http scheme: %q", got)
+// A mother fronted by something that terminates TLS is addressed over https,
+// including a path prefix. The agent concatenates onto whatever it is given.
+func TestInstallScriptCarriesAFrontingProxyURL(t *testing.T) {
+	a, st := setup(t)
+	a.SetPublicURL("https://ops.feast.tr/watch")
+
+	body := fetchInstallScript(t, a, st, "Behind_Proxy")
+	if !strings.Contains(body, "MOTHER_URL=https://ops.feast.tr/watch") {
+		t.Fatalf("proxy URL must survive verbatim:\n%s", body)
 	}
-	if got := InstallCommand("https", "10.0.0.1:8443", "tk_abc"); got != "curl -sSLk https://10.0.0.1:8443/install/tk_abc.sh | sudo bash" {
-		t.Fatalf("https scheme: %q", got)
+}
+
+// The one-liner an operator pastes must reach the same endpoint the installed
+// agent will use, and must not carry -k: with the mother on plain HTTP there is
+// no certificate to excuse, and a fronting proxy is expected to present one the
+// host already trusts.
+func TestInstallCommandUsesThePublicURL(t *testing.T) {
+	if got := InstallCommand("http://10.0.0.1:8443", "tk_abc"); got != "curl -sSL http://10.0.0.1:8443/install/tk_abc.sh | sudo bash" {
+		t.Fatalf("plain: %q", got)
+	}
+	if got := InstallCommand("https://ops.feast.tr/watch", "tk_abc"); got != "curl -sSL https://ops.feast.tr/watch/install/tk_abc.sh | sudo bash" {
+		t.Fatalf("behind proxy: %q", got)
 	}
 }
 

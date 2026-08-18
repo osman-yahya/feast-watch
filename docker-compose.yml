@@ -4,7 +4,7 @@ services:
     environment:
       FW_DB_PATH: /data/mother.db
       FW_LISTEN: ":8443"
-      FW_PUBLIC_ADDR: "mother:8443"
+      FW_PUBLIC_URL: "http://mother:8443"
       FW_API_KEY: dev-api-key
       FW_DOWNLOADS_DIR: /data/downloads
     volumes: [ "mother-data:/data" ]

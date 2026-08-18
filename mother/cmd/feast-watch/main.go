@@ -27,19 +27,23 @@ func main() {
 	}
 	defer st.Close()
 
-	publicAddr := env("FW_PUBLIC_ADDR", "127.0.0.1:8443")
-
-	// The scheme agents are told to use must match what this process actually
-	// serves below, so it is derived from the TLS cert rather than assumed.
-	cert, key := os.Getenv("FW_TLS_CERT"), os.Getenv("FW_TLS_KEY")
-	scheme := "http"
-	if cert != "" {
-		scheme = "https"
+	// The mother serves plain HTTP. Anything that needs TLS terminates it in
+	// front and is named here, so agents are told the address that actually
+	// answers rather than one this process guesses from its own configuration.
+	legacyAddr := os.Getenv("FW_PUBLIC_ADDR")
+	if legacyAddr != "" {
+		slog.Warn("FW_PUBLIC_ADDR is retired; set FW_PUBLIC_URL with a scheme instead",
+			"assuming", "http://"+legacyAddr)
+	}
+	publicURL, err := mother.PublicURL(os.Getenv("FW_PUBLIC_URL"), legacyAddr)
+	if err != nil {
+		slog.Error("public url", "err", err)
+		os.Exit(1)
 	}
 
 	// `feast-watch generate --name=X` — CLI alternative to the panel's Add Server.
 	if len(os.Args) > 1 && os.Args[1] == "generate" {
-		out, err := mother.RunGenerate(st, scheme, publicAddr, os.Args[2:])
+		out, err := mother.RunGenerate(st, publicURL, os.Args[2:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -54,11 +58,7 @@ func main() {
 		os.Exit(1)
 	}
 	a := api.New(st, apiKey, env("FW_DOWNLOADS_DIR", "/var/lib/feast-watch/downloads"))
-	a.SetPublicAddr(publicAddr)
-	a.SetScheme(scheme)
-	// Opt-in: with a self-signed cert the generated install script must tell
-	// the agent to skip verification, otherwise every push fails on trust.
-	a.SetAgentTLSSkipVerify(os.Getenv("FW_AGENT_TLS_SKIP_VERIFY") == "true")
+	a.SetPublicURL(publicURL)
 
 	go func() { // rollup every 30s over the last 10 minutes (idempotent REPLACE)
 		for range time.Tick(30 * time.Second) {
@@ -80,12 +80,8 @@ func main() {
 	}()
 
 	listen := env("FW_LISTEN", ":8443")
-	slog.Info("mother listening", "addr", listen, "tls", cert != "")
-	if cert != "" {
-		err = http.ListenAndServeTLS(listen, cert, key, a.Handler())
-	} else {
-		err = http.ListenAndServe(listen, a.Handler())
-	}
+	slog.Info("mother listening", "addr", listen, "public_url", publicURL)
+	err = http.ListenAndServe(listen, a.Handler())
 	slog.Error("server stopped", "err", err)
 	os.Exit(1)
 }

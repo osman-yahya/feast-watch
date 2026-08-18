@@ -3,10 +3,9 @@ package agent
 
 import (
 	"bufio"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,16 +24,6 @@ type Config struct {
 	PostgresDSN        string
 	K8sAPIURL          string
 	K8sToken           string
-
-	// CAFile, if set, is a PEM file of CA certificates the agent trusts for
-	// the mother's TLS connection, in addition to (not instead of) the
-	// system trust store — needed when the mother presents a certificate
-	// signed by an internal/private CA.
-	CAFile string
-	// TLSSkipVerify disables TLS certificate verification entirely. It is
-	// ignored when CAFile is set (see HTTPClient) and should only be used
-	// against non-production mothers with throwaway certs.
-	TLSSkipVerify bool
 }
 
 // LoadConfig reads KEY=VALUE lines ('#' comments allowed) and validates
@@ -73,8 +62,6 @@ func LoadConfig(path string) (Config, error) {
 		PostgresDSN:      kv["POSTGRES_DSN"],
 		K8sAPIURL:        kv["K8S_API_URL"],
 		K8sToken:         kv["K8S_TOKEN"],
-		CAFile:           kv["CA_FILE"],
-		TLSSkipVerify:    kv["TLS_SKIP_VERIFY"] == "true",
 	}
 	if raw := kv["CENTRIFUGO_CONNS_MAX"]; raw != "" {
 		cfg.CentrifugoConnsMax, err = strconv.ParseFloat(raw, 64)
@@ -92,32 +79,40 @@ func LoadConfig(path string) (Config, error) {
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required config: %s", strings.Join(missing, ", "))
 	}
+	if err := validateMotherURL(cfg.MotherURL); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
-// HTTPClient builds the client the agent uses for every mother connection
-// (push loop and self-update). Trust resolution: CAFile takes precedence and
-// extends the system trust store with the internal CA; TLSSkipVerify is
-// honored only when no CAFile is set. With neither, the default transport
-// (system trust store) applies.
-func (c Config) HTTPClient(timeout time.Duration) (*http.Client, error) {
-	client := &http.Client{Timeout: timeout}
-	switch {
-	case c.CAFile != "":
-		pemBytes, err := os.ReadFile(c.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read CA_FILE: %w", err)
-		}
-		pool, err := x509.SystemCertPool()
-		if err != nil {
-			pool = x509.NewCertPool()
-		}
-		if !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, fmt.Errorf("CA_FILE %s contains no valid PEM certificates", c.CAFile)
-		}
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
-	case c.TLSSkipVerify:
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+// validateMotherURL fails fast on a MOTHER_URL the agent could never reach.
+// Every request is built by concatenating a rooted path onto this value, so a
+// bare host:port or a missing scheme produces a request error on every push
+// with nothing in the config to point at.
+func validateMotherURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("MOTHER_URL %q is not a URL: %w", raw, err)
 	}
-	return client, nil
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("MOTHER_URL %q must start with http:// or https://", raw)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("MOTHER_URL %q has no host", raw)
+	}
+	return nil
+}
+
+// HTTPClient builds the client the agent uses for every mother connection
+// (push loop and self-update).
+//
+// The transport is left at Go's default, which means the system trust store
+// and nothing else. The agent no longer carries CA_FILE or TLS_SKIP_VERIFY:
+// the mother serves plain HTTP, and where TLS is terminated by something in
+// front of it that proxy is expected to present a certificate the host already
+// trusts. Removing the knobs removes the failure mode where a relaxed setting
+// meant for a self-signed mother silently followed the agent to any other host
+// it was later pointed at.
+func (c Config) HTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
 }

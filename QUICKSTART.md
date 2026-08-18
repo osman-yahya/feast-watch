@@ -39,6 +39,20 @@ Run the full push → rollup → chart cycle end-to-end:
 2. Run the mother with environment variables from [`.env.example`](.env.example)
    (copy it to `.env`, fill in real values, and load it into the environment).
 
+   The mother serves plain HTTP and does not terminate TLS. Where TLS is
+   wanted, put a reverse proxy in front and set `FW_PUBLIC_URL` to the proxy's
+   URL — that value is what every agent is handed, so it has to be the address
+   that actually answers.
+
+   Migrating a mother that used to serve TLS: either keep a proxy on the old
+   `https://<ip>:8443` address, in which case no host is touched, or run
+   [`deploy/migrate-agent-http.sh`](deploy/migrate-agent-http.sh) on each
+   monitored host. An agent holding an `https://` URL against a plain-HTTP
+   mother fails at the transport, and nothing in the protocol can re-point it:
+   the ingest response carries no URL and the config is read once at startup.
+   Kubernetes agents read their config from a Secret, so they need that Secret
+   patched and the DaemonSet rolled instead.
+
 3. From the admin panel (or CLI), add a server:
 
    ```bash
@@ -48,7 +62,7 @@ Run the full push → rollup → chart cycle end-to-end:
    Either flow prints a one-liner. Paste it on the target server:
 
    ```bash
-   curl -sSL https://<mother-ip>:8443/install/<token>.sh | sudo bash
+   curl -sSL http://<mother-ip>:8443/install/<token>.sh | sudo bash
    ```
 
    The install script downloads the right-arch agent binary, writes
@@ -65,7 +79,7 @@ on one server at a time from the panel, or directly:
 
 ```bash
 curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
-  https://<mother-ip>:8443/api/servers/<id>/version -d '{"version":"v1.3.0"}'
+  http://<mother-ip>:8443/api/servers/<id>/version -d '{"version":"v1.3.0"}'
 ```
 
 The agent picks the target up on its next push, verifies the checksum, replaces

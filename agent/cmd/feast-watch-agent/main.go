@@ -41,16 +41,10 @@ func main() {
 		reg.Register(collectors.NewK8s(cfg.K8sAPIURL, cfg.K8sToken))
 	}
 
-	pushClient, err := cfg.HTTPClient(5 * time.Second)
-	if err != nil {
-		slog.Error("tls config", "err", err)
-		os.Exit(1)
-	}
-	updateClient, err := cfg.HTTPClient(60 * time.Second)
-	if err != nil {
-		slog.Error("tls config", "err", err)
-		os.Exit(1)
-	}
+	// Two clients, one policy: a push must give up quickly so the interval is
+	// honoured, a binary download must not.
+	pushClient := cfg.HTTPClient(5 * time.Second)
+	updateClient := cfg.HTTPClient(60 * time.Second)
 
 	loop := agent.NewLoopWithClient(cfg, reg, pushClient)
 	loop.Run(context.Background(), func(desired string) error {

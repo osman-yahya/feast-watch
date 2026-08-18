@@ -28,11 +28,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer out.Close()
-	// TLSSkipVerify true renders the larger of the two branches, so the linted
-	// output covers every line the template can emit.
 	if err := tmpl.Execute(out, map[string]any{
 		"MotherURL": "http://127.0.0.1:8443", "Token": "tk_placeholder",
-		"ServerName": "placeholder", "TLSSkipVerify": true,
+		"ServerName": "placeholder",
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

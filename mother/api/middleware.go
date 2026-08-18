@@ -14,20 +14,15 @@ import (
 )
 
 type API struct {
-	st         *store.Store
-	apiKey     string
-	downloads  string // directory holding agent binaries + .sha256 files
-	publicAddr string // host:port agents reach the mother on, e.g. "10.0.0.1:8443"
-	// scheme is the URL scheme the mother actually serves ("https" when it
-	// holds a TLS certificate, "http" otherwise). Agents are told to reach it
-	// over this scheme; hardcoding https would hand a plain-HTTP mother an
-	// install script whose every push fails.
-	scheme string
-	// agentTLSSkipVerify makes the generated install script write
-	// TLS_SKIP_VERIFY=true into agent.conf. Required when the mother presents
-	// a self-signed certificate: install.sh is the only channel that reaches
-	// the agent's TLS configuration, and a CA file path cannot be transferred.
-	agentTLSSkipVerify bool
+	st        *store.Store
+	apiKey    string
+	downloads string // directory holding agent binaries + .sha256 files
+	// publicURL is the base URL agents reach the mother on, scheme included,
+	// e.g. "http://10.0.0.1:8443". It is a whole URL rather than a host:port
+	// because the mother no longer decides the scheme: it serves plain HTTP
+	// and may sit behind something that terminates TLS at another host, port
+	// or path prefix. See mother.PublicURL.
+	publicURL string
 
 	mu       sync.Mutex
 	lastPush map[int64]time.Time // per-server rate-limit state
@@ -36,25 +31,18 @@ type API struct {
 func New(st *store.Store, apiKey string, downloads string) *API {
 	return &API{
 		st: st, apiKey: apiKey, downloads: downloads,
-		publicAddr: "127.0.0.1:8443", scheme: "https",
-		lastPush: map[int64]time.Time{},
+		// Plain HTTP by default and by construction. There is no setter that
+		// can raise this to https on its own — the whole URL is supplied or it
+		// is not, so a half-configured mother cannot hand agents a scheme it
+		// does not serve.
+		publicURL: "http://127.0.0.1:8443",
+		lastPush:  map[int64]time.Time{},
 	}
 }
 
-func (a *API) SetPublicAddr(addr string) { a.publicAddr = addr }
-
-// SetScheme sets the URL scheme agents use to reach the mother. Anything other
-// than "http" is treated as "https" so a misconfiguration can never downgrade
-// a TLS-serving mother to plaintext.
-func (a *API) SetScheme(scheme string) {
-	if scheme == "http" {
-		a.scheme = "http"
-		return
-	}
-	a.scheme = "https"
-}
-
-func (a *API) SetAgentTLSSkipVerify(skip bool) { a.agentTLSSkipVerify = skip }
+// SetPublicURL sets the base URL agents are told to reach the mother on.
+// Validate it with mother.PublicURL before calling.
+func (a *API) SetPublicURL(u string) { a.publicURL = u }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()

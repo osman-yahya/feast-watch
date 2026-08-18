@@ -29,7 +29,8 @@ func SelfUpdate(cfg Config, desiredVersion string, exit func(int)) error {
 }
 
 // SelfUpdateWithClient is SelfUpdate with a caller-supplied client, so the
-// download honors the same TLS trust configuration as the push loop.
+// download runs on the same transport policy as the push loop with its own
+// timeout — a binary transfer must not give up as fast as a push does.
 func SelfUpdateWithClient(cfg Config, desiredVersion string, exit func(int), client *http.Client) error {
 	self, err := os.Executable()
 	if err != nil {
