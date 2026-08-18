@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -142,8 +143,29 @@ func main() {
 	}()
 
 	listen := env("FW_LISTEN", ":8443")
+	srv := &http.Server{Addr: listen, Handler: a.Handler()}
+
+	// Shut down on the same signal that stops the release poller. Trapping
+	// SIGTERM without acting on it is worse than not trapping it: the default
+	// action is gone, so `systemctl stop` would wait out its whole timeout and
+	// then SIGKILL — mid-write, on a database this process is the only writer
+	// of.
+	go func() {
+		<-ctx.Done()
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("graceful shutdown failed", "err", err)
+		}
+	}()
+
 	slog.Info("mother listening", "addr", listen, "public_url", publicURL)
-	err = http.ListenAndServe(listen, a.Handler())
+	err = srv.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		slog.Info("server stopped")
+		return
+	}
 	slog.Error("server stopped", "err", err)
 	os.Exit(1)
 }
