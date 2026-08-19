@@ -1,6 +1,13 @@
 services:
   mother:
-    build: { context: ., dockerfile: Dockerfile.mother }
+    # FW_VERSION rides into the build so the binary reports a real version
+    # instead of the "dev" default. Unset means dev, which is the honest
+    # answer for an image built from the working tree — see Dockerfile.mother.
+    #   FW_VERSION=$(git describe --tags) docker compose up -d --build
+    build:
+      context: .
+      dockerfile: Dockerfile.mother
+      args: { VERSION: "${FW_VERSION:-dev}" }
     environment:
       FW_DB_PATH: /data/mother.db
       FW_LISTEN: ":8443"
@@ -16,12 +23,18 @@ services:
     networks: [ default, feast-watch ]
 
   agent-1:
-    build: { context: ., dockerfile: Dockerfile.agent }
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args: { VERSION: "${FW_VERSION:-dev}" }
     depends_on: [ mother ]
     volumes: [ "./e2e/agent-1.conf:/etc/feast-watch/agent.conf:ro" ]
 
   agent-2:
-    build: { context: ., dockerfile: Dockerfile.agent }
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args: { VERSION: "${FW_VERSION:-dev}" }
     depends_on: [ mother ]
     volumes: [ "./e2e/agent-2.conf:/etc/feast-watch/agent.conf:ro" ]
 

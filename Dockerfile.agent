@@ -1,7 +1,14 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/feast-watch-agent ./agent/cmd/feast-watch-agent
+
+# Linked exactly as Dockerfile.mother does it, and for the same reason — see
+# the comment there. An agent built without this reports "dev" on every push
+# and can never satisfy a rollout target.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build \
+      -ldflags "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${VERSION}" \
+      -o /out/feast-watch-agent ./agent/cmd/feast-watch-agent
 
 FROM alpine:3.20
 COPY --from=build /out/feast-watch-agent /usr/local/bin/feast-watch-agent

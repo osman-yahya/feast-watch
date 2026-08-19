@@ -1,7 +1,24 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/feast-watch ./mother/cmd/feast-watch
+
+# The version has to be linked in the same way bin/release.sh and the release
+# workflow do it, or the binary reports the "dev" default forever: the panel
+# then shows "Mother sürümü: dev" with nothing to compare agents against.
+#
+# It defaults to dev rather than to a release number on purpose. This image is
+# built from the working tree, which is not the tagged commit unless somebody
+# says so, and agent_version is not cosmetic — the mother compares it against
+# desired_version to decide whether a rollout has landed. An image that claims
+# v1.0.0 while running other code makes update_state say "idle" about an update
+# that never happened.
+#
+#   docker compose up -d --build                              -> dev
+#   FW_VERSION=$(git describe --tags) docker compose up -d --build
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build \
+      -ldflags "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${VERSION}" \
+      -o /out/feast-watch ./mother/cmd/feast-watch
 
 FROM alpine:3.20
 COPY --from=build /out/feast-watch /usr/local/bin/feast-watch
