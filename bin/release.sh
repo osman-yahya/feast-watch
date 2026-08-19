@@ -1,18 +1,37 @@
 #!/usr/bin/env bash
 # Build the mother and every agent binary locally, with the version compiled in.
 #
-#   bin/release.sh              # version from `git describe`
-#   bin/release.sh v1.3.0       # explicit version
+#   bin/release.sh                     # version from `git describe`
+#   bin/release.sh v1.3.0              # explicit version
+#   bin/release.sh --mother-only       # just the mother, for a host being deployed
 #
 # This is a developer convenience, not the release path. Releases are built and
 # published by .github/workflows/release.yml on a tag push: agents download
 # their binaries from the GitHub release, and the mother neither stores nor
 # serves them, so there is nothing to stage on a server any more.
+#
+# --mother-only exists because deploying a mother is the one case where the
+# agent builds are pure waste: the mother host compiles from source, and every
+# agent on the fleet — including the one beside the mother — downloads its own
+# binary from the release. Four cross-compiles and eight files, none of them
+# ever read. The flag lives here rather than in a second script so the ldflags
+# string, which is what actually has to stay right, has one home.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+MOTHER_ONLY=0
+VERSION=""
+for arg in "$@"; do
+  case "$arg" in
+    --mother-only) MOTHER_ONLY=1 ;;
+    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "unknown option: $arg" >&2; exit 2 ;;
+    *) VERSION="$arg" ;;
+  esac
+done
+
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 OUT_DIR="${OUT_DIR:-bin/build}"
 LDFLAGS="-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${VERSION}"
 
@@ -44,6 +63,15 @@ echo "-> version $VERSION"
 
 echo "-> building mother"
 go build -ldflags "$LDFLAGS" -o "$OUT_DIR/feast-watch" ./mother/cmd/feast-watch
+
+if [ "$MOTHER_ONLY" -eq 1 ]; then
+  echo
+  echo "built in $OUT_DIR:"
+  echo "  feast-watch"
+  echo
+  echo "next: sudo deploy/mother-install.sh $OUT_DIR/feast-watch"
+  exit 0
+fi
 
 for platform in "${PLATFORMS[@]}"; do
   goos="${platform%-*}"
