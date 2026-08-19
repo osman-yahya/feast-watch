@@ -19,6 +19,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # TAG and LDFLAGS are job-level so the build and the check that the build
+    # worked cannot drift apart. They did: the verify step below ran `go run`
+    # with no -ldflags at all, so it measured a binary nobody ships, always
+    # printed the default "dev" and could never pass. Nothing caught it because
+    # no tag had been pushed since the step was written — the first real
+    # release, v1.0.0, is what ran it.
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      LDFLAGS: -s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${{ inputs.tag || github.ref_name }}
     strategy:
       matrix:
         # Must match shared/release.Platforms — the mother offers exactly what
@@ -40,7 +49,6 @@ jobs:
 
       - name: build agent
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
@@ -48,29 +56,28 @@ jobs:
           # whatever path it runs from, and the asset name is what both the
           # download URL and the mother's index key on.
           asset="feast-watch-agent-${GOOS}-${GOARCH}"
-          CGO_ENABLED=0 go build \
-            -ldflags "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${TAG}" \
-            -o "$asset" ./agent/cmd/feast-watch-agent
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "$asset" ./agent/cmd/feast-watch-agent
           # The agent refuses to install without a verified checksum, so a build
           # uploaded without one is a rollout target that can only ever fail.
           sha256sum "$asset" | cut -d' ' -f1 > "$asset.sha256"
 
       - name: verify the version was injected
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
         # A binary built without -ldflags reports "dev" forever, so no agent can
-        # ever satisfy a rollout target. Only the host-native build can be run
-        # here to check it.
+        # ever satisfy a rollout target. The failure this guards is a wrong -X
+        # import path, which the linker accepts in silence, so the check has to
+        # use the SAME $LDFLAGS the asset was built with — a rebuild with its
+        # own copy of the flags would prove nothing about the shipped binary.
+        #
+        # printversion rather than the agent itself: the agent has no --version
+        # and only the host-native build could be run here anyway.
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
-          go run ./.github/tools/printversion | tee /tmp/v
+          go run -ldflags "$LDFLAGS" ./.github/tools/printversion | tee /tmp/v
           grep -qx "$TAG" /tmp/v || { echo "version not injected"; exit 1; }
-        continue-on-error: false
 
       - name: upload assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           asset="feast-watch-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
           # --clobber so a re-run replaces a partial upload instead of failing.
