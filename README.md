@@ -11,13 +11,23 @@ the mother directly.
 ## Architecture
 
 ```
-┌────────────┐  HTTPS push (10s)   ┌────────────┐   API key    ┌───────────────┐
+┌────────────┐  HTTP push (10s)    ┌────────────┐   API key    ┌───────────────┐
 │  agent(s)  │ ──────────────────► │   mother   │ ◄──────────  │ feast backend │
 │ (each srv) │ ◄────────────────── │ Go+SQLite  │              └──────┬────────┘
 └────────────┘  config in response └────────────┘                     │
                                      ▲    also runs an agent          ▼
                                      └── monitors its own host   admin panel
 ```
+
+The mother serves plain HTTP and does not terminate TLS; it is reached over a
+private network, and where TLS is wanted a reverse proxy goes in front of it
+(see [`QUICKSTART.md`](QUICKSTART.md)).
+
+Every connection is opened by the **agent**: it pushes, and the mother's
+*response* carries the config it wants applied — collector set, interval, and
+the version to update to. Agents run no listener and the mother never dials a
+monitored host, so the mother's server can be firewalled inbound-only. See
+[Network posture](QUICKSTART.md#network-posture).
 
 ## Docs
 

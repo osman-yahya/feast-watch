@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/osman-yahya/feast-watch/mother/live"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
@@ -28,6 +29,10 @@ type API struct {
 	// and may sit behind something that terminates TLS at another host, port
 	// or path prefix. See mother.PublicURL.
 	publicURL string
+	// live is the in-RAM tail of every server's samples — the resolution the
+	// rollup tiers deliberately do not keep. It is fed by ingest and read by
+	// /api/live and the fleet list; nothing about it is persisted.
+	live *live.Store
 
 	mu       sync.Mutex
 	lastPush map[int64]time.Time // per-server rate-limit state
@@ -41,8 +46,19 @@ func New(st *store.Store, apiKey string, releases *release.Cache) *API {
 		// is not, so a half-configured mother cannot hand agents a scheme it
 		// does not serve.
 		publicURL: "http://127.0.0.1:8443",
-		lastPush:  map[int64]time.Time{},
+		// The stored setting is applied by ApplySettings at boot and on every
+		// save; this is only the value a mother runs with until then.
+		live:     live.New(time.Duration(store.DefaultLiveWindowMinutes)*time.Minute, time.Now),
+		lastPush: map[int64]time.Time{},
 	}
+}
+
+// ApplySettings pushes the operator-configurable knobs that live outside
+// SQLite into the components that hold them. Today that is the live window
+// only. Call it at boot with the stored settings and after every save, so a
+// change takes effect without a restart.
+func (a *API) ApplySettings(s store.Settings) {
+	a.live.SetWindow(time.Duration(s.LiveWindowMinutes) * time.Minute)
 }
 
 // SetPublicURL sets the base URL agents are told to reach the mother on.
@@ -52,7 +68,9 @@ func (a *API) SetPublicURL(u string) { a.publicURL = u }
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/ingest", a.handleIngest)
+	a.registerUninstall(mux)
 	a.registerAdmin(mux) // Task 11
+	a.registerLive(mux)
 	a.registerSettings(mux)
 	a.registerGroups(mux)
 	a.registerChart(mux)   // Task 12

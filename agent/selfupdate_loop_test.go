@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/osman-yahya/feast-watch/agent/collectors"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
+	"github.com/osman-yahya/feast-watch/shared/version"
 )
 
 // versionServer answers every push with the same desired version and records
@@ -124,5 +126,161 @@ func TestNewTargetResetsRetryGap(t *testing.T) {
 	l.tryUpdate("v1.3.0", fail) // corrected target, same instant
 	if attempts != 2 {
 		t.Fatalf("a new target must not inherit the previous backoff, attempts = %d", attempts)
+	}
+}
+
+// scriptedMother is a fake mother whose answer to each push is scripted: push
+// N is answered with the Nth desired version (the last entry repeats). It
+// records every request, which is the only thing the panel ever sees, so the
+// tests below assert on the wire rather than on the loop's internals.
+type scriptedMother struct {
+	mu      sync.Mutex
+	seen    []protocol.IngestRequest
+	decErr  error
+	desired []string
+	served  chan struct{}
+}
+
+func newScriptedMother(desired ...string) *scriptedMother {
+	return &scriptedMother{desired: desired, served: make(chan struct{}, 64)}
+}
+
+func (m *scriptedMother) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req protocol.IngestRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+
+	m.mu.Lock()
+	if err != nil && m.decErr == nil {
+		m.decErr = err
+	}
+	m.seen = append(m.seen, req)
+	n := len(m.seen)
+	m.mu.Unlock()
+
+	if n > len(m.desired) {
+		n = len(m.desired)
+	}
+	// Interval 1 keeps the loop's own sleep from dominating the test; the
+	// retry gap is driven by the injected clock, not by wall time.
+	json.NewEncoder(w).Encode(protocol.IngestResponse{Interval: 1, DesiredVersion: m.desired[n-1]})
+
+	select {
+	case m.served <- struct{}{}:
+	default:
+	}
+}
+
+// request returns the Nth push (1-based) as the mother received it.
+func (m *scriptedMother) request(t *testing.T, n int) protocol.IngestRequest {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.decErr != nil {
+		t.Fatalf("decoding push: %v", m.decErr)
+	}
+	if len(m.seen) < n {
+		t.Fatalf("only %d pushes reached the mother, wanted %d", len(m.seen), n)
+	}
+	return m.seen[n-1]
+}
+
+// runLoop drives Run against the fake mother until it has served pushes
+// pushes, then stops it. Assertions read the recorded requests, so a push
+// aborted by the shutdown cannot affect them.
+func runLoop(t *testing.T, m *scriptedMother, pushes int, update func(string) error) {
+	t.Helper()
+	srv := httptest.NewServer(m)
+	defer srv.Close()
+
+	l := NewLoop(Config{MotherURL: srv.URL, Token: "t", ServerName: "s1"}, collectors.NewRegistry())
+	// One frozen instant: whether the retry gap suppresses an attempt must be
+	// decided by the code under test, not by how long the test happened to take.
+	frozen := time.Unix(1700000000, 0)
+	l.now = func() time.Time { return frozen }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); l.Run(ctx, update, nil) }()
+
+	timeout := time.After(30 * time.Second)
+	for served := 0; served < pushes; {
+		select {
+		case <-m.served:
+			served++
+		case <-timeout:
+			cancel()
+			t.Fatal("timed out waiting for pushes")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
+// Withdrawing the target is how an operator calls off a rollout that will not
+// install. If the agent keeps shipping the old reason, the panel shows a
+// failure for a server that has nothing outstanding, and no panel action can
+// clear it — the next push just writes it back.
+func TestWithdrawnTargetStopsReportingTheError(t *testing.T) {
+	t.Parallel()
+	m := newScriptedMother("v9.9.9", "")
+	runLoop(t, m, 3, func(string) error { return errors.New("404 not staged") })
+
+	if got := m.request(t, 2).UpdateError; got != "404 not staged" {
+		t.Fatalf("push 2 must still report the live failure, got %q", got)
+	}
+	if got := m.request(t, 3).UpdateError; got != "" {
+		t.Fatalf("push after the target was withdrawn still reports %q", got)
+	}
+}
+
+// Re-targeting the version the agent already runs is the other way to call a
+// rollout off, and the one the mother itself produces once a host reaches the
+// target. Nothing is outstanding, so nothing is failing.
+func TestTargetMatchingRunningVersionStopsReportingTheError(t *testing.T) {
+	t.Parallel()
+	m := newScriptedMother("v9.9.9", version.Version)
+	runLoop(t, m, 3, func(string) error { return errors.New("404 not staged") })
+
+	if got := m.request(t, 3).UpdateError; got != "" {
+		t.Fatalf("target already satisfied, but push still reports %q", got)
+	}
+}
+
+// The other half of the rule: while a target is still being asked for, the
+// last failure at it is the current state and must keep reaching the operator,
+// even though the retry gap is suppressing further attempts.
+func TestThrottledTargetKeepsReportingTheError(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	m := newScriptedMother("v9.9.9")
+	runLoop(t, m, 3, func(string) error { attempts++; return errors.New("404 not staged") })
+
+	if attempts != 1 {
+		t.Fatalf("retry gap must hold: attempts = %d, want 1", attempts)
+	}
+	if got := m.request(t, 3).UpdateError; got != "404 not staged" {
+		t.Fatalf("an unresolved failure must stay visible, got %q", got)
+	}
+}
+
+// Withdrawing a target and naming it again is an operator retrying by hand.
+// If the gap survived the withdrawal the agent would sit out the next five
+// minutes without attempting anything and without an error to show for it —
+// a rollout stuck on "pending" with no reason attached.
+func TestRetargetingAfterAWithdrawalAttemptsAgain(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	m := newScriptedMother("v9.9.9", "", "v9.9.9")
+	runLoop(t, m, 4, func(string) error { attempts++; return errors.New("404 not staged") })
+
+	if attempts != 2 {
+		t.Fatalf("re-named target must be attempted again, attempts = %d, want 2", attempts)
+	}
+	if got := m.request(t, 4).UpdateError; got != "404 not staged" {
+		t.Fatalf("the fresh failure must be reported, got %q", got)
 	}
 }

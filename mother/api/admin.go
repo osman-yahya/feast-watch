@@ -47,9 +47,21 @@ type serverView struct {
 	DesiredVersion string `json:"desired_version"`
 	UpdateState    string `json:"update_state"`
 	UpdateError    string `json:"update_error"`
+	// UninstallRequestedAt is when an operator deleted this server, 0 when
+	// nobody has; UninstallError is why the agent has not managed to remove
+	// itself yet. Both are what the panel's "kaldırılıyor" row is built from.
+	UninstallRequestedAt int64  `json:"uninstall_requested_at"`
+	UninstallError       string `json:"uninstall_error"`
 	// Groups the server belongs to. Always a list, never null: the panel maps
 	// over it directly.
 	Groups []groupRef `json:"groups"`
+	// Latest is the newest value of every metric still inside the live window,
+	// and LatestTS when the newest of them arrived (0 when there is nothing).
+	// Embedded here rather than fetched per server so the fleet table and the
+	// group overview both cost one request, at whatever cadence they poll.
+	// Always an object, never null.
+	Latest   map[string]float64 `json:"latest"`
+	LatestTS int64              `json:"latest_ts"`
 }
 
 // updateState derives the rollout state the panel renders. It is a projection
@@ -65,6 +77,12 @@ func updateState(srv store.Server) string {
 }
 
 func status(srv store.Server, s store.Settings, now int64) string {
+	// Being on the way out outranks every other state: the row exists only to
+	// carry the removal, and showing it as "online" would invite an operator
+	// to act on a host that is deleting itself.
+	if srv.UninstallRequestedAt != 0 {
+		return "uninstalling"
+	}
 	if srv.LastPush == 0 {
 		return "pending"
 	}
@@ -94,6 +112,10 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 	views := make([]serverView, 0, len(servers))
 	for _, s := range servers {
+		latest, latestTS := a.live.Latest(s.ID)
+		if latest == nil {
+			latest = map[string]float64{}
+		}
 		groups := make([]groupRef, 0, len(groupsByServer[s.ID]))
 		for _, g := range groupsByServer[s.ID] {
 			groups = append(groups, groupRef{ID: g.ID, Name: g.Name})
@@ -105,6 +127,9 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 			AgentVersion: s.AgentVersion, LastPush: s.LastPush,
 			DesiredVersion: s.DesiredVersion, UpdateState: updateState(s),
 			UpdateError: s.UpdateError, Groups: groups,
+			UninstallRequestedAt: s.UninstallRequestedAt,
+			UninstallError:       s.UninstallError,
+			Latest:               latest, LatestTS: latestTS,
 		})
 	}
 	writeJSON(w, http.StatusOK, views, "")
@@ -171,11 +196,52 @@ func (a *API) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, nil, "invalid id")
 		return
 	}
-	if err := a.st.DeleteServer(id); err != nil {
+	srv, err := a.st.ServerByID(id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, nil, "server not found")
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
 		return
 	}
-	writeJSON(w, http.StatusOK, nil, "")
+
+	// Two-phase by default (see store/uninstall.go): the delete schedules the
+	// agent's own removal and the row survives to carry it. Dropping the row
+	// here instead would revoke the token the agent needs to be told anything,
+	// leaving it installed, running and permanently unreachable.
+	//
+	// Two cases skip straight to the hard delete, because in both there is
+	// nobody on the other end to tell:
+	//   force=true — the operator says this host is never coming back;
+	//   last_push == 0 — no agent ever reported, so nothing was ever installed
+	//   that could report the removal.
+	if r.URL.Query().Get("force") != "true" && srv.LastPush != 0 {
+		if err := a.st.RequestUninstall(id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "uninstalling"}, "")
+		return
+	}
+
+	if err := a.deleteServer(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"}, "")
+}
+
+// deleteServer drops the row and everything keyed on the id, in SQLite and in
+// memory both. Every path that removes a server goes through here: the live
+// store is not covered by DeleteServer's transaction, and a forgotten Forget
+// would hand a future server (ids are reused) a dead host's live chart.
+func (a *API) deleteServer(id int64) error {
+	if err := a.st.DeleteServer(id); err != nil {
+		return err
+	}
+	a.live.Forget(id)
+	return nil
 }
 
 func (a *API) handleSetCollectors(w http.ResponseWriter, r *http.Request) {

@@ -25,6 +25,13 @@ const defaultInterval = 10 // seconds; the mother overrides this per response
 // interval means downloading a whole binary every 10 seconds indefinitely.
 const updateRetryGap = 5 * time.Minute
 
+// uninstallRetryGap throttles repeated removal attempts, for the same reason
+// updateRetryGap throttles updates: a host where the uninstaller is missing or
+// cannot start would otherwise respawn it on every push, forever, at whatever
+// interval the mother set. The mother keeps asking until the removal is
+// confirmed, so the retry is guaranteed — this only decides how often.
+const uninstallRetryGap = 5 * time.Minute
+
 type Loop struct {
 	cfg      Config
 	reg      *collectors.Registry
@@ -38,7 +45,14 @@ type Loop struct {
 	updateErr    string
 	updateTarget string
 	lastUpdateAt time.Time
-	now          func() time.Time
+
+	// Removal state, reported the same way: an agent that cannot remove
+	// itself has to say so, or its row sits in "kaldırılıyor" with no reason
+	// attached.
+	uninstallErr    string
+	lastUninstallAt time.Time
+
+	now func() time.Time
 }
 
 func NewLoop(cfg Config, reg *collectors.Registry) *Loop {
@@ -62,10 +76,11 @@ func (l *Loop) Interval() int { return l.interval }
 
 func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 	req := protocol.IngestRequest{
-		Server:       l.cfg.ServerName,
-		AgentVersion: version.Version,
-		UpdateError:  l.updateErr,
-		Samples:      l.reg.CollectEnabled(ctx, l.enabled),
+		Server:         l.cfg.ServerName,
+		AgentVersion:   version.Version,
+		UpdateError:    l.updateErr,
+		UninstallError: l.uninstallErr,
+		Samples:        l.reg.CollectEnabled(ctx, l.enabled),
 	}
 	if !l.pushed {
 		req.Hostname, _ = os.Hostname()
@@ -118,20 +133,78 @@ func (l *Loop) PushOnce(ctx context.Context) (*protocol.IngestResponse, error) {
 // retried on the next tick — the agent never crashes on network errors.
 // update performs the self-update and, on success, does not return: it
 // replaces this binary and exits for the service manager to restart.
-func (l *Loop) Run(ctx context.Context, update func(string) error) {
+// uninstall removes the agent from this host; it may be nil where removal is
+// not something this deployment can do (a k8s DaemonSet, say).
+func (l *Loop) Run(ctx context.Context, update func(string) error, uninstall func() error) {
 	for {
-		resp, err := l.PushOnce(ctx)
-		if err != nil {
-			slog.Error("push failed", "err", err)
-		} else if resp.DesiredVersion != "" && resp.DesiredVersion != version.Version {
-			l.tryUpdate(resp.DesiredVersion, update)
-		}
+		l.RunOnce(ctx, update, uninstall)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Duration(l.interval) * time.Second):
 		}
 	}
+}
+
+// RunOnce performs exactly one push and acts on the answer. Split out of Run
+// so the decision table — what a response means and what it triggers — is
+// testable without a ticker.
+func (l *Loop) RunOnce(ctx context.Context, update func(string) error, uninstall func() error) {
+	resp, err := l.PushOnce(ctx)
+	if err != nil {
+		// A push that never landed carries no news about the rollout, so
+		// the update state is left exactly as it was and reported on the
+		// first push that gets through.
+		slog.Error("push failed", "err", err)
+		return
+	}
+	// Removal outranks the rollout: a host on its way out has no use for a new
+	// binary, and downloading one would be work done on a machine that is
+	// being decommissioned.
+	if resp.Uninstall {
+		l.tryUninstall(uninstall)
+		return
+	}
+	if resp.DesiredVersion == "" || resp.DesiredVersion == version.Version {
+		// Nothing outstanding: the target was withdrawn, corrected to the
+		// version already running, or reached. Whatever failed before is
+		// history now, and history reported as the current state is a
+		// failure the operator cannot clear from the panel — the next push
+		// would only write it back.
+		l.forgetUpdate()
+		return
+	}
+	l.tryUpdate(resp.DesiredVersion, update)
+}
+
+// tryUninstall starts the removal, at most once per uninstallRetryGap.
+//
+// A failure is kept in uninstallErr and reported on the next push rather than
+// being retried immediately: the mother repeats the command on every push
+// while the request stands, so the retry is already guaranteed and the only
+// question is how often a host that cannot remove itself tries again.
+func (l *Loop) tryUninstall(uninstall func() error) {
+	if uninstall == nil {
+		l.uninstallErr = "this agent cannot remove itself (no uninstaller wired in)"
+		return
+	}
+	now := l.now()
+	if !l.lastUninstallAt.IsZero() && now.Sub(l.lastUninstallAt) < uninstallRetryGap {
+		// The last attempt failed and its reason is still the current state,
+		// so uninstallErr is deliberately left standing — see tryUpdate.
+		return
+	}
+	l.lastUninstallAt = now
+
+	slog.Info("uninstall requested by the mother")
+	if err := uninstall(); err != nil {
+		slog.Error("uninstall failed", "err", err)
+		l.uninstallErr = err.Error()
+		return
+	}
+	// Started. Nothing here observes the outcome — the uninstaller reports it
+	// to the mother itself once the host is clean (see agent/uninstall.go).
+	l.uninstallErr = ""
 }
 
 // tryUpdate attempts the self-update, at most once per updateRetryGap for a
@@ -141,6 +214,13 @@ func (l *Loop) Run(ctx context.Context, update func(string) error) {
 func (l *Loop) tryUpdate(desired string, update func(string) error) {
 	now := l.now()
 	if desired == l.updateTarget && now.Sub(l.lastUpdateAt) < updateRetryGap {
+		// updateErr is deliberately left standing. The mother is still asking
+		// for this target and the last attempt at it failed, so the failure is
+		// the current state, not a past one — the gap only suppresses the
+		// retry, it does not resolve anything. Clearing here would blank the
+		// warning on every push in between and leave a stuck rollout looking
+		// like an ordinary pending one, which is the whole condition the
+		// operator asked to be told about.
 		return
 	}
 	l.updateTarget, l.lastUpdateAt = desired, now
@@ -152,6 +232,14 @@ func (l *Loop) tryUpdate(desired string, update func(string) error) {
 		return
 	}
 	l.updateErr = ""
+}
+
+// forgetUpdate drops the state of an update nobody is asking for any more.
+// The retry gap goes with it: re-targeting a version after withdrawing it is a
+// deliberate operator action, not the every-push retry the gap exists to stop,
+// and it should be acted on at the next push like any other new target.
+func (l *Loop) forgetUpdate() {
+	l.updateErr, l.updateTarget, l.lastUpdateAt = "", "", time.Time{}
 }
 
 func localIP() string {

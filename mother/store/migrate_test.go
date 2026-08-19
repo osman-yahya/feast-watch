@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -136,5 +137,39 @@ func TestMigrationRunsOncePerDatabase(t *testing.T) {
 	db.QueryRow(`PRAGMA user_version`).Scan(&version)
 	if version != len(migrations) {
 		t.Fatalf("user_version %d, want %d", version, len(migrations))
+	}
+}
+
+// A database that already ran every migration up to the one before the last
+// still has to receive the last one. This is the failure mode of an ordered
+// list indexed by user_version: an entry inserted anywhere but the end
+// renumbers its successors, and a database sitting on the old numbering skips
+// exactly one migration — silently, because the version then looks current.
+//
+// Written as "stand a database at len(migrations)-1 and expect the columns the
+// newest migration adds" so it keeps testing the newest one as more are added.
+func TestNewestMigrationReachesAnAlreadyMigratedDatabase(t *testing.T) {
+	db := legacyDB(t)
+	if _, err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	// Rewind one version and drop what the last migration added, standing the
+	// database exactly where the previous release left it.
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)-1)); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"uninstall_requested_at", "uninstall_error"} {
+		if _, err := db.Exec(`ALTER TABLE servers DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO servers (name, token, collectors, created_at, uninstall_requested_at, uninstall_error)
+		 VALUES ('web-9','tk_9','[]',1,0,'')`); err != nil {
+		t.Fatalf("the newest migration did not reach an already-migrated database: %v", err)
 	}
 }

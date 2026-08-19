@@ -49,5 +49,5 @@ func main() {
 	loop := agent.NewLoopWithClient(cfg, reg, pushClient)
 	loop.Run(context.Background(), func(desired string) error {
 		return agent.SelfUpdateWithClient(cfg, desired, os.Exit, updateClient)
-	})
+	}, cfg.Uninstall)
 }

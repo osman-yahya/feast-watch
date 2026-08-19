@@ -27,6 +27,11 @@ type Config struct {
 	K8sAPIURL          string
 	K8sToken           string
 
+	// UninstallCmd overrides where the uninstall script lives. Empty means
+	// DefaultUninstaller — the path the installer writes it to. It is a key
+	// only so a differently-packaged host (or a test) can point elsewhere.
+	UninstallCmd string
+
 	// ReleaseBaseURL is where agent binaries are downloaded from. It defaults
 	// to the public repository (release.DefaultBaseURL) and exists as a key
 	// only so tests and an internal mirror can point somewhere else — the
@@ -79,6 +84,7 @@ func LoadConfig(path string) (Config, error) {
 		K8sAPIURL:        kv["K8S_API_URL"],
 		K8sToken:         kv["K8S_TOKEN"],
 		ReleaseBaseURL:   kv["RELEASE_BASE_URL"],
+		UninstallCmd:     kv["UNINSTALL_CMD"],
 	}
 	if raw := kv["CENTRIFUGO_CONNS_MAX"]; raw != "" {
 		cfg.CentrifugoConnsMax, err = strconv.ParseFloat(raw, 64)

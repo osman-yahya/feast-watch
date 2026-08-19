@@ -8,6 +8,9 @@
 #
 #   feast-watch-agent-uninstall              # remove the service and binary, keep the config
 #   feast-watch-agent-uninstall --purge      # also remove /etc/feast-watch (including the token)
+#   feast-watch-agent-uninstall --report     # tell the mother the host is clean, so the
+#                                            # panel row disappears instead of sitting in
+#                                            # "kaldırılıyor" waiting for a confirmation
 #   feast-watch-agent-uninstall --dry-run    # print what would be removed
 #
 # Every step is idempotent: this has to finish on a half-installed host, and
@@ -27,6 +30,9 @@ UNIT_NAME=feast-watch-agent.service
 SELF="$FW_ROOT/usr/local/sbin/feast-watch-agent-uninstall"
 
 DRY_RUN=0
+REPORT=0
+REPORT_URL=""
+REPORT_TOKEN=""
 
 say() { echo "-> $*"; }
 
@@ -83,11 +89,60 @@ reload_systemd() {
   systemctl reset-failed "$UNIT_NAME" 2>/dev/null || true
 }
 
+# load_report_target reads the mother URL and token out of agent.conf, before
+# anything removes it.
+#
+# The credentials are read here rather than passed in by the agent that starts
+# this script: an argument (or a systemd-run --setenv, which is also an
+# argument) is visible in /proc to every user on the host. This file is
+# root-owned and 0600, and this script is about to delete it anyway.
+load_report_target() {
+  local conf="$CONF_DIR/agent.conf"
+  [ -r "$conf" ] || return 0
+  REPORT_URL=$(sed -n "s/^MOTHER_URL=//p" "$conf" | head -1)
+  REPORT_TOKEN=$(sed -n "s/^TOKEN=//p" "$conf" | head -1)
+}
+
+# report_removal closes the two-phase delete: the mother keeps the server row
+# (status "uninstalling") until something confirms the host is actually clean,
+# and this is that confirmation.
+#
+# It is reported from HERE, and not by the agent, because the agent is stopped
+# by this very script: it could only ever report "I am about to remove myself",
+# and if the removal then failed the mother would already have forgotten a host
+# still running an agent it can no longer reach.
+#
+# Every failure is non-fatal and says so. A host being decommissioned must
+# finish being decommissioned whether or not the mother is reachable; the
+# operator can drop the leftover row with "Zorla Sil" in the panel.
+report_removal() {
+  [ "$REPORT" -eq 1 ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would report the removal to $REPORT_URL"
+    return 0
+  fi
+  if [ -z "$REPORT_URL" ] || [ -z "$REPORT_TOKEN" ]; then
+    say "no mother URL or token on this host; remove the row in the panel with Zorla Sil"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    say "curl is not installed; remove the row in the panel with Zorla Sil"
+    return 0
+  fi
+  if curl -fsS -m 10 -X POST -H "Authorization: Bearer $REPORT_TOKEN" \
+      "$REPORT_URL/v1/uninstalled" >/dev/null 2>&1; then
+    say "reported the removal to the mother"
+  else
+    say "could not reach the mother; remove the row in the panel with Zorla Sil"
+  fi
+}
+
 main() {
   local purge=0
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
+      --report) REPORT=1 ;;
       --dry-run) DRY_RUN=1 ;;
       -h|--help)
         sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
@@ -103,6 +158,9 @@ main() {
     echo "must run as root" >&2
     return 1
   fi
+
+  # Read the credentials before anything deletes them.
+  load_report_target
 
   stop_service
   remove "$UNIT"
@@ -127,13 +185,21 @@ main() {
     say "kept $CONF_DIR (pass --purge to remove the config, including the token)"
   fi
 
+  # Reported before the script unlinks itself, so a failure here still leaves a
+  # working uninstaller on disk to run again.
+  report_removal
+
   # Removed last: it is the file currently executing. bash has already read the
   # script, so unlinking it here is safe.
   remove "$SELF"
 
   echo
-  echo "feast-watch agent removed. The server will show as offline in the panel"
-  echo "until it is deleted there — the agent cannot delete its own record."
+  if [ "$REPORT" -eq 1 ]; then
+    echo "feast-watch agent removed."
+  else
+    echo "feast-watch agent removed. The server will show as offline in the panel"
+    echo "until it is deleted there — the agent cannot delete its own record."
+  fi
 }
 
 main "$@"

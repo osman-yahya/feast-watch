@@ -18,11 +18,22 @@ type Settings struct {
 	HeartbeatMissThreshold int `json:"heartbeat_miss_threshold"`
 	Retention1mDays        int `json:"retention_1m_days"`
 	Retention1hDays        int `json:"retention_1h_days"`
+	// LiveWindowMinutes is how much of the live, in-RAM view the mother keeps
+	// (mother/live). It is not a retention setting: nothing is stored and
+	// nothing is deleted by lowering it — it only bounds the mother's own
+	// memory, which is why the API may accept a payload that omits it while
+	// every retention field stays mandatory.
+	LiveWindowMinutes int `json:"live_window_minutes"`
 }
+
+// DefaultLiveWindowMinutes is the live window a mother runs with until the
+// stored settings are read. Exported because the API constructs its live store
+// before it can read them (see api.New / api.ApplySettings).
+const DefaultLiveWindowMinutes = 15
 
 var defaultSettings = Settings{
 	Interval: 10, HeartbeatMissThreshold: 3,
-	Retention1mDays: 15, Retention1hDays: 75,
+	Retention1mDays: 15, Retention1hDays: 75, LiveWindowMinutes: DefaultLiveWindowMinutes,
 }
 
 func (s *Store) GetSettings() (Settings, error) {
@@ -54,6 +65,8 @@ func (s *Store) GetSettings() (Settings, error) {
 			out.Retention1mDays = n
 		case "retention_1h_days":
 			out.Retention1hDays = n
+		case "live_window_minutes":
+			out.LiveWindowMinutes = n
 		}
 	}
 	return out, rows.Err()
@@ -65,6 +78,7 @@ func (s *Store) SaveSettings(in Settings) error {
 		"heartbeat_miss_threshold": strconv.Itoa(in.HeartbeatMissThreshold),
 		"retention_1m_days":        strconv.Itoa(in.Retention1mDays),
 		"retention_1h_days":        strconv.Itoa(in.Retention1hDays),
+		"live_window_minutes":      strconv.Itoa(in.LiveWindowMinutes),
 	}
 	for k, v := range pairs {
 		if _, err := s.db.Exec(

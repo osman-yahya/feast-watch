@@ -56,6 +56,22 @@ var migrations = []struct {
 			CREATE INDEX IF NOT EXISTS idx_group_members_server ON server_group_members(server_id);`)
 		return err
 	}},
+
+	// APPEND ONLY. The index of an entry IS its user_version, so inserting one
+	// above this line renumbers every migration after it: a database that had
+	// already applied them would skip the new one and silently run without the
+	// columns it adds.
+	{"servers: two-phase uninstall", func(tx *sql.Tx) error {
+		for _, c := range []string{
+			`uninstall_requested_at INTEGER NOT NULL DEFAULT 0`,
+			`uninstall_error TEXT NOT NULL DEFAULT ''`,
+		} {
+			if err := addColumn(tx, "servers", c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}},
 }
 
 // migrate brings db up to the current schema version and reports how many

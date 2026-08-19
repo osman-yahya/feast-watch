@@ -127,6 +127,14 @@ func main() {
 
 	a := api.New(st, apiKey, releases)
 	a.SetPublicURL(publicURL)
+	// The live window is stored in settings but held in memory, so it has to
+	// be applied at boot as well as on save — otherwise a restart would run
+	// the default until an operator happened to press Save.
+	if settings, err := st.GetSettings(); err != nil {
+		slog.Error("read settings at boot", "err", err)
+	} else {
+		a.ApplySettings(settings)
+	}
 
 	// No rollup job: ingest folds each push into both tiers as it arrives
 	// (store.ApplySamples), so there is nothing to recompute on a timer.

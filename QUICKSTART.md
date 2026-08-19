@@ -4,7 +4,12 @@
 
 Local development only — production uses systemd (see below), not Docker.
 
+The compose stack joins a `feast-watch` network it declares external, so that
+`docker compose down` here cannot break the feast backend's devcontainer, which
+declares the same one. Create it once, then bring the stack up:
+
 ```bash
+docker network create feast-watch   # once per machine
 docker compose up -d --build
 ```
 
@@ -19,6 +24,16 @@ Run the full push → rollup → chart cycle end-to-end:
 
 ```bash
 ./e2e/e2e_test.sh
+```
+
+Where Docker is not available — a laptop, or a quick check between edits —
+`e2e/local_smoke.sh` runs the mother and an agent as plain binaries against a
+throwaway database in a temp directory, removing everything on exit. It asserts
+the same push → rollup → chart path plus groups, rollout validation against the
+published releases, and the settings payload rules:
+
+```bash
+./e2e/local_smoke.sh
 ```
 
 ## Production
@@ -80,6 +95,76 @@ Run the full push → rollup → chart cycle end-to-end:
    Kubernetes nodes use `deploy/k8s/daemonset.yaml` instead (hostPID + `/proc`
    mount, token supplied as a Secret).
 
+## Network posture
+
+The direction of every connection is fixed by the protocol, not by
+configuration — which is what lets the mother's host be firewalled as
+**inbound-only**.
+
+- **Agents do not listen.** There is no server in the agent: no port, no
+  socket, nothing to reach. Grep for it — `agent/` contains no
+  `net.Listen`/`ListenAndServe`. A monitored host exposes no new surface at
+  all.
+- **The mother never dials an agent.** Every exchange is opened by the agent.
+  It POSTs `/v1/ingest`, and the *response* carries what the mother wants
+  applied: the collector set, the push interval and `desired_version`
+  (`shared/protocol.IngestResponse`). A rollout is therefore an **answer to a
+  push**, never a request to a host. The mother does record each agent's IP,
+  but only to show it in the panel — no code path connects to it, and the
+  fleet works identically with all outbound traffic from the mother blocked.
+- **The mother's only egress is the GitHub API**, `api.github.com` — a
+  conditional GET of the release list every 5 minutes
+  (`FW_RELEASE_POLL_INTERVAL`), so it can offer only rollout targets that are
+  actually downloadable. It is optional: see the closed-egress note below.
+- **Binaries never cross the monitoring path.** The mother names a version;
+  the agent downloads that build from the public GitHub release and verifies
+  its SHA-256 itself. The mother stores no binaries and serves no bytes.
+
+### What to open
+
+On the **mother host**:
+
+| Direction | Peer | Port | Why |
+|---|---|---|---|
+| in | every monitored host | `FW_LISTEN` (`8443`) | `POST /v1/ingest` (agent token) |
+| in | feast backend (api pods) | `FW_LISTEN` | `/api/*` with `X-API-Key`, for the admin panel proxy |
+| in | a host being installed | `FW_LISTEN` | `GET /install/{token}.sh`, `GET /uninstall.sh` |
+| out | `api.github.com:443` | 443 | release index only |
+
+Nothing else. In particular there is no mother→agent rule to write.
+
+On a **monitored host**: no inbound rule at all. Outbound to the mother's
+`FW_PUBLIC_URL`, and — only while installing or self-updating — to the release
+host (`RELEASE_BASE_URL`, by default `github.com`, which redirects downloads to
+`objects.githubusercontent.com`). Point `RELEASE_BASE_URL` at an internal
+mirror to drop that one too.
+
+`ufw` on the mother, spelled out:
+
+```bash
+ufw default deny incoming
+ufw default deny outgoing
+ufw allow proto tcp from <agent-subnet>   to any port 8443
+ufw allow proto tcp from <backend-subnet> to any port 8443
+ufw allow out 53                 # resolve api.github.com
+ufw allow out proto tcp to any port 443   # the release index
+```
+
+### Closing the egress completely
+
+Drop the `443` rule and the mother stops reading GitHub. Two consequences,
+both bounded:
+
+1. The rollout dropdown has no versions to offer, so state them by hand with
+   `FW_AGENT_VERSIONS` (see [`.env.example`](.env.example)). A successful
+   fetch would replace the seed; with no route, the seed simply stands.
+2. The mother monitors its own host, and *that* agent then cannot self-update
+   either — it downloads from the same release host every other agent does.
+   Update it the way the mother itself is updated, by hand.
+
+Neither touches ingest: agents keep pushing, the panel keeps reading, and a
+target set by hand still reaches every host.
+
 ## Updating agents
 
 Stage the new release on the mother (step 1 above), then set the target version
@@ -98,10 +183,45 @@ blocked by a file nobody staged on it. Watch `update_state` on
 matches, `failed` with `update_error` if it could not install. Send
 `{"version":""}` to cancel a rollout that has not landed.
 
-Targets are per server on purpose — update one host, confirm it, then the rest.
+One host at a time is the intended rhythm — update it, confirm it, then the
+rest. A group target (below) is a fan-out over that same per-server field, not
+a second kind of state, so nothing about confirming a host first changes.
+
 The mother is not self-updating: `GET /api/version` reports its version so you
 can see what the agents should catch up to, but deploying it stays with
 systemd/Docker/k8s.
+
+### Groups
+
+Servers can be put into named groups, the fleet list filtered by one, and a
+whole group pointed at a version in a single call. Membership is many-to-many:
+the axes worth slicing by — environment, role, region — are independent, and a
+single group column on a server would force picking one of them.
+
+```bash
+# create a group, fill it, then point it at a version
+curl -sf -H "X-API-Key: $FW_API_KEY" -X POST \
+  http://<mother-ip>:8443/api/groups -d '{"name":"prod-db"}'
+curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
+  http://<mother-ip>:8443/api/groups/<id>/servers -d '{"server_ids":[1,2,3]}'
+curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
+  http://<mother-ip>:8443/api/groups/<id>/version -d '{"version":"v1.3.0"}'
+```
+
+The bulk rollout splits two different kinds of fault. A bad version —
+unpublished, or the moving alias — is a property of the request: it fails with
+400 and nothing is written, because no member could ever accept it. A missing
+build for one host's platform is that host's problem: it is skipped and named in
+`skipped[]` while the rest land in `applied[]`, so one darwin laptop cannot
+permanently block a rollout across forty Linux servers. Either way the response
+is 200 — the writes that could land did. Sending `{"version":""}` clears the
+target on every member regardless of platform, so a rollout can always be
+cancelled group-wide.
+
+`GET /api/servers?group_id=<id>` narrows the fleet list to one group, and every
+server row carries its own `groups[]`. `GET /api/groups` lists them, `PATCH
+/api/groups/{id}` renames one (a duplicate name is a 409), and `DELETE
+/api/groups/{id}` removes one along with its memberships — no server is touched.
 
 ## Storage
 
@@ -123,14 +243,116 @@ backup first.
 and ignored on the way in, so an older panel or proxy is not rejected while it
 catches up.
 
-## Removing it
+## The live view
 
-Agent, on each monitored host — the installer leaves the uninstaller on disk, so
-this works even when the mother is already gone:
+The rollups start at 1-minute resolution, so nothing stored can show what a
+server is doing *right now* at the cadence agents actually push at. That
+resolution is kept in the mother's **memory** instead — the last N minutes of
+every sample, per server — and served from there:
 
 ```bash
-sudo feast-watch-agent-uninstall --purge
+curl -sf -H "X-API-Key: $FW_API_KEY" \
+  "http://<mother-ip>:8443/api/live?server_id=1&metric=cpu.usage,memory.usage"
 ```
+
+It reads nothing from SQLite, which is the point: the panel polls it every few
+seconds and never touches the single write connection ingest depends on.
+
+- **Window:** `live_window_minutes` in settings, 1–60, default 15. It is a
+  memory budget, not a retention policy — a minute of it is held for every
+  server, so raising it costs RAM on the mother and nothing else.
+- **Not persisted, deliberately.** A restart empties it and the next pushes
+  refill it within one window. Buying durability would cost a write per push,
+  which is exactly the write volume the raw tier was dropped to avoid.
+- **`GET /api/servers` carries the newest value of every metric** (`latest`,
+  `latest_ts`) from the same store, so the fleet table and the group overview
+  cost one request no matter how many servers they show.
+
+Unlike every other settings field, `live_window_minutes` may be **omitted** from
+a `PUT /api/settings` payload: it gates no delete, and requiring it would reject
+every caller written before it existed.
+
+## What the agent costs the host it watches
+
+The agent wakes at the interval the mother gives it, collects, pushes, and goes
+back to sleep — there is no background work between pushes and no server on it
+to answer. One full collection of the four base collectors, measured with
+`go test ./agent/collectors -bench . -run XXX` on an M4 Pro:
+
+| Collector | per collection | allocations |
+|---|---|---|
+| cpu | ~6.5 µs | 1.3 KB |
+| memory | ~11 µs | 1.9 KB |
+| uptime | ~1.2 µs | 0.1 KB |
+| disk | ~1.1 µs | 0.1 KB |
+| **all four together** | **~17 µs** | **3.7 KB** |
+
+At the default 10-second interval that is roughly two thousandths of a percent
+of one core. Two details are what keep it there, and both are load-bearing:
+
+- **CPU sampling never sleeps the loop.** `cpu.Percent(0, false)` reads the
+  delta since the previous call. The blocking form would hold the agent for
+  whatever sampling window it was given, on every push.
+- **Service collectors hold one connection, not a pool.** The Postgres probe
+  keeps a single handle capped at one connection with an idle and a lifetime
+  bound, because a database is monitored precisely when its connection budget
+  matters. Dial-per-sample would put the monitoring load where it hurts most.
+
+The push itself is one HTTP request with a 5-second timeout; a failed push is
+dropped and retried on the next tick rather than queued, so a mother outage
+costs the host nothing that accumulates.
+
+## Removing it
+
+### Deleting a server from the panel
+
+**Sil** removes the agent from the host as well as the row from the mother, and
+it takes two phases to do it. The mother cannot dial an agent (see [Network
+posture](#network-posture)), so the only channel to a host is the answer to its
+own push:
+
+1. The delete is recorded on the row, which stays. The server shows as
+   **`uninstalling`**.
+2. Every push from that agent is answered with "remove yourself" until it goes
+   away — a failed or interrupted attempt is retried without anyone pressing
+   anything again.
+3. The agent starts the uninstaller as a **transient systemd unit**, because
+   the first thing that script does is stop the agent's own service; a plain
+   child would be killed halfway through removing the files it is standing on.
+4. The uninstaller removes everything and then reports it (`POST
+   /v1/uninstalled`, authenticated with the host's own token, and only valid
+   for a server somebody actually deleted). **That** report drops the row.
+
+The confirmation comes from the uninstaller rather than from the agent on
+purpose: an agent can only ever say "I am about to remove myself", and if that
+attempt then failed the mother would have forgotten a host still running an
+agent it can no longer reach.
+
+Two cases skip the wait, because there is nobody on the other end to tell:
+
+- **Zorla Sil** (`DELETE /api/servers/{id}?force=true`) — the operator's way
+  out for a host that is never coming back. The row and its history go now; if
+  the machine is still alive, run the uninstaller on it by hand.
+- A server that **never pushed** — nothing was ever installed that could
+  report back, so the row is dropped outright.
+
+An agent that cannot remove itself (no uninstaller on disk, no systemd) reports
+why on its next push, and the panel shows that reason on the `uninstalling`
+row instead of leaving it silently stuck.
+
+### By hand, on the host
+
+The installer leaves the uninstaller on disk, so this works even when the
+mother is already gone:
+
+```bash
+sudo feast-watch-agent-uninstall --purge            # remove the agent
+sudo feast-watch-agent-uninstall --purge --report   # ...and tell the mother, so the row goes too
+```
+
+`--report` reads the mother URL and token out of `agent.conf` — never from an
+argument, which `/proc` would show to every user on the host — and is what the
+agent passes when the removal was requested from the panel.
 
 Mother, on its own host:
 

@@ -268,8 +268,12 @@ func TestSettingsAcceptCompletePayload(t *testing.T) {
 		t.Fatalf("complete settings must succeed, got %d %s", w.Code, w.Body)
 	}
 	got, _ := st.GetSettings()
+	// The payload carries no live window, so the stored one survives — see
+	// TestSettingsLiveWindowIsOptionalAndPreserved for why that field alone is
+	// merged rather than required.
 	want := store.Settings{Interval: 20, HeartbeatMissThreshold: 4,
-		Retention1mDays: 7, Retention1hDays: 90}
+		Retention1mDays: 7, Retention1hDays: 90,
+		LiveWindowMinutes: store.DefaultLiveWindowMinutes}
 	if got != want {
 		t.Fatalf("stored %+v want %+v", got, want)
 	}

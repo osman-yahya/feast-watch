@@ -16,6 +16,9 @@
 #   4  groups: create, duplicate-name conflict, membership, filter, bulk clear
 #   5  rollout targets are validated against published GitHub releases
 #   6  a settings payload missing a retention key is refused
+#   7  the live view serves pushes from memory at the cadence they arrived
+#   8  the push interval an operator sets reaches the agent in its next response
+#   9  deleting a server tells the agent to uninstall itself, and force deletes
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -61,6 +64,25 @@ error_of() {
   local method="$1" path="$2" body="${3:-}"
   curl -s -H "$KEY" -X "$method" "$BASE$path" ${body:+-d "$body"} |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["error"])'
+}
+
+
+# agent_push sends one push as the agent would and prints the response body.
+#
+# It retries: ingest allows one push per server per 2 seconds, and the real
+# agent started above is pushing on its own the whole time — so a bare curl
+# here loses the race often enough to make the check flaky rather than wrong.
+agent_push() {
+  local body
+  for _ in $(seq 1 15); do
+    body=$(curl -sf -X POST "$BASE/v1/ingest" -H "Authorization: Bearer $TOKEN" \
+      -d '{"server":"smoke-host","samples":{}}' 2>/dev/null) && [ -n "$body" ] && {
+      echo "$body"
+      return 0
+    }
+    sleep 1
+  done
+  return 1
 }
 
 build() {
@@ -274,6 +296,100 @@ check_settings_guard() {
   pass "complete payload accepted"
 }
 
+
+# 7 — the live view: what the rollups deliberately cannot show.
+check_live_view() {
+  step "7. live view serves the raw tail from memory"
+  local points window latest
+  points=$(api "/api/live?server_id=1&metric=cpu.usage,mem.used_pct" |
+    python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["series"]["cpu.usage"]))')
+  [ "$points" -ge 2 ] || fail "live series returned $points points, want the last few pushes"
+  pass "live series returned $points point(s) at push resolution"
+
+  # Every requested metric answers, even one this host does not collect.
+  api "/api/live?server_id=1&metric=cpu.usage,disk.used_pct" |
+    python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["series"]; sys.exit(0 if "disk.used_pct" in d else 1)' ||
+    fail "a requested metric was missing from the live response"
+  pass "every requested metric is answered"
+
+  window=$(api "/api/live?server_id=1&metric=cpu.usage" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["window_seconds"])')
+  [ "$window" = "900" ] || fail "live window is $window seconds, want the 900s default"
+  pass "live window reported as $window seconds"
+
+  # The same store feeds the fleet list, which is what the table and the group
+  # overview render CPU/RAM from without a request per server.
+  latest=$(api /api/servers |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["latest"].get("cpu.usage","missing"))')
+  [ "$latest" != "missing" ] || fail "the fleet list carries no latest samples"
+  pass "fleet list embeds the newest sample (cpu.usage=$latest)"
+
+  # The window is a memory budget, so it is bounded at the boundary.
+  local code
+  code=$(status_of PUT /api/settings '{"interval":2,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75,"live_window_minutes":600}')
+  [ "$code" = "400" ] || fail "a 600-minute live window returned $code, want 400"
+  pass "an out-of-bounds live window is refused"
+}
+
+# 8 — the operator-set push interval reaches the agent.
+check_interval_reaches_the_agent() {
+  step "8. the configured interval reaches the agent"
+  curl -sf -o /dev/null -H "$KEY" -X PUT "$BASE/api/settings" \
+    -d '{"interval":7,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75}'
+
+  # Asked as the agent asks: the interval travels in the answer to a push, and
+  # nowhere else — the mother never dials a host.
+  local interval
+  interval=$(agent_push | python3 -c 'import json,sys; print(json.load(sys.stdin)["interval"])') ||
+    fail "no push got through the rate limit"
+  [ "$interval" = "7" ] || fail "ingest answered interval=$interval, want 7"
+  pass "the agent is told to push every $interval seconds"
+
+  curl -sf -o /dev/null -H "$KEY" -X PUT "$BASE/api/settings" \
+    -d '{"interval":2,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75}'
+}
+
+# 9 — deleting a server removes the agent from its host.
+check_two_phase_delete() {
+  step "9. delete schedules the agent's own removal"
+  local code status uninstall
+
+  code=$(status_of DELETE /api/servers/1)
+  [ "$code" = "200" ] || fail "delete returned $code"
+
+  status=$(api /api/servers |
+    python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(d[0]["status"] if d else "gone")')
+  [ "$status" = "uninstalling" ] || fail "server status is $status, want uninstalling"
+  pass "the row survives the delete as 'uninstalling'"
+
+  # The command travels in the answer to the agent's own push.
+  uninstall=$(agent_push |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("uninstall", False))') ||
+    fail "no push got through the rate limit"
+  [ "$uninstall" = "True" ] || fail "ingest did not carry the uninstall command"
+  pass "the agent is told to remove itself on its next push"
+
+  # This laptop has no installed agent to remove, so the real agent running
+  # here reports exactly that — which is the failure path an operator sees when
+  # a host cannot uninstall itself.
+  local reported=0
+  for _ in $(seq 1 20); do
+    if api /api/servers | grep -q '"uninstall_error":"[^"]'; then
+      reported=1
+      break
+    fi
+    sleep 1
+  done
+  [ "$reported" = "1" ] || fail "the agent never reported why it could not remove itself"
+  pass "the agent's removal failure is visible on the row"
+
+  # And the way out for a host that will never report: force.
+  code=$(status_of DELETE "/api/servers/1?force=true")
+  [ "$code" = "200" ] || fail "force delete returned $code"
+  api /api/servers | grep -q '"id":1' && fail "the row survived a forced delete"
+  pass "force delete drops the row immediately"
+}
+
 main() {
   build
   start_mother
@@ -284,6 +400,9 @@ main() {
   check_groups
   check_rollout_validation
   check_settings_guard
+  check_live_view
+  check_interval_reaches_the_agent
+  check_two_phase_delete
 
   echo
   echo "all checks passed"

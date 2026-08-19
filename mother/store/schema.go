@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS servers (
   capabilities  TEXT NOT NULL DEFAULT '[]',
   desired_version TEXT NOT NULL DEFAULT '',
   update_error    TEXT NOT NULL DEFAULT '',
+  -- A delete from the panel cannot reach the host directly (the mother never
+  -- dials an agent), so it is recorded here and handed to the agent in the
+  -- answer to its next push. The row outlives the request until the agent
+  -- reports the removal finished; see store/uninstall.go.
+  uninstall_requested_at INTEGER NOT NULL DEFAULT 0,
+  uninstall_error        TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rollup_1m (

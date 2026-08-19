@@ -78,10 +78,15 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"storage failure"}`, http.StatusInternalServerError)
 			return
 		}
+		// Same push, same timestamp, second destination: the live tail. It is
+		// fed under the same "strictly newer" guard as the rollups so a
+		// replayed push cannot make the live chart show the same second twice.
+		a.live.Add(srv.ID, now, req.Samples)
 	}
 	if err := a.st.TouchServer(srv.ID, store.Heartbeat{
 		AgentVersion: req.AgentVersion, Hostname: req.Hostname, IP: req.IP,
 		OS: req.OS, Arch: req.Arch, UpdateError: req.UpdateError,
+		UninstallError: req.UninstallError,
 	}, now); err != nil {
 		slog.Error("touch server", "server", srv.Name, "err", err)
 	}
@@ -104,5 +109,9 @@ func (a *API) handleIngest(w http.ResponseWriter, r *http.Request) {
 		Collectors:     srv.Collectors,
 		Interval:       settings.Interval,
 		DesiredVersion: srv.DesiredVersion,
+		// Repeated on every push while the request stands: the agent may have
+		// died, failed or been rolled back between pushes, and the row is not
+		// dropped until the removal actually reports success.
+		Uninstall: srv.UninstallRequestedAt != 0,
 	})
 }

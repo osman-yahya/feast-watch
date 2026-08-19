@@ -39,7 +39,15 @@ type Server struct {
 	// UpdateError is the agent's last self-update failure, refreshed on every
 	// push so a recovered agent clears it without operator action.
 	UpdateError string
-	CreatedAt   int64
+	// UninstallRequestedAt is when an operator asked for this agent to be
+	// removed from its host, 0 when nobody has. Non-zero means the row is
+	// living on borrowed time: the agent is told to remove itself on every
+	// push until it reports back (see store/uninstall.go).
+	UninstallRequestedAt int64
+	// UninstallError is why the agent could not remove itself, refreshed on
+	// every push like UpdateError.
+	UninstallError string
+	CreatedAt      int64
 }
 
 // Heartbeat is what one agent push reports about the agent itself, as opposed
@@ -51,7 +59,14 @@ type Heartbeat struct {
 	OS           string
 	Arch         string
 	UpdateError  string
+	// UninstallError is the agent's last removal failure, empty when the last
+	// attempt was clean or none was made.
+	UninstallError string
 }
+
+// nowUnix is the store's clock. A function so tests can reason about it in one
+// place rather than reaching for time.Now at each call site.
+func nowUnix() int64 { return time.Now().Unix() }
 
 func newToken() string {
 	b := make([]byte, 16)
@@ -79,14 +94,16 @@ func (s *Store) AddServer(name string) (Server, error) {
 }
 
 const serverCols = `id, name, token, collectors, hostname, ip, os, arch, agent_version,
-	last_push, capabilities, desired_version, update_error, created_at`
+	last_push, capabilities, desired_version, update_error,
+	uninstall_requested_at, uninstall_error, created_at`
 
 func scanServer(row interface{ Scan(...any) error }) (Server, error) {
 	var srv Server
 	var cols, caps string
 	err := row.Scan(&srv.ID, &srv.Name, &srv.Token, &cols, &srv.Hostname, &srv.IP,
 		&srv.OS, &srv.Arch, &srv.AgentVersion, &srv.LastPush, &caps,
-		&srv.DesiredVersion, &srv.UpdateError, &srv.CreatedAt)
+		&srv.DesiredVersion, &srv.UpdateError,
+		&srv.UninstallRequestedAt, &srv.UninstallError, &srv.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
 	}
@@ -138,13 +155,13 @@ func (s *Store) ListServers() ([]Server, error) {
 // previously failed update.
 func (s *Store) TouchServer(id int64, hb Heartbeat, now int64) error {
 	_, err := s.db.Exec(`UPDATE servers SET agent_version = ?, last_push = ?,
-		update_error = ?,
+		update_error = ?, uninstall_error = ?,
 		hostname = CASE WHEN ? != '' THEN ? ELSE hostname END,
 		ip       = CASE WHEN ? != '' THEN ? ELSE ip END,
 		os       = CASE WHEN ? != '' THEN ? ELSE os END,
 		arch     = CASE WHEN ? != '' THEN ? ELSE arch END
 		WHERE id = ?`,
-		hb.AgentVersion, now, hb.UpdateError,
+		hb.AgentVersion, now, hb.UpdateError, hb.UninstallError,
 		hb.Hostname, hb.Hostname, hb.IP, hb.IP,
 		hb.OS, hb.OS, hb.Arch, hb.Arch, id)
 	return err

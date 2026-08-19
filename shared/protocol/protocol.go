@@ -23,12 +23,23 @@ type IngestRequest struct {
 	// attempt succeeded or none was made. Without it a failed update is
 	// invisible: the panel would show a target version the agent silently
 	// never reaches.
-	UpdateError string             `json:"update_error,omitempty"`
-	Samples     map[string]float64 `json:"samples"`
+	UpdateError string `json:"update_error,omitempty"`
+	// UninstallError carries the last failure to remove this agent from its
+	// host, empty when the last attempt was clean or none was made. It rides
+	// every push like UpdateError, so an agent that could not find its
+	// uninstaller stays visible in the panel instead of looking merely slow.
+	UninstallError string             `json:"uninstall_error,omitempty"`
+	Samples        map[string]float64 `json:"samples"`
 }
 
 type IngestResponse struct {
 	Collectors     []string `json:"collectors"`
 	Interval       int      `json:"interval"`
 	DesiredVersion string   `json:"desired_version"`
+	// Uninstall asks the agent to remove itself from this host. It is how an
+	// operator's "delete" in the panel reaches a machine the mother can never
+	// dial: the answer to the agent's own push is the only channel there is.
+	// It stays true on every push until the removal is confirmed, so a failed
+	// attempt is retried without anybody re-pressing anything.
+	Uninstall bool `json:"uninstall,omitempty"`
 }
