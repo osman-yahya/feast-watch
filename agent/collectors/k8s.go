@@ -26,6 +26,19 @@ func NewK8s(apiURL, token string) *K8s {
 
 func (k *K8s) Name() string { return "k8s" }
 
+// watchCacheList is appended to every cluster-wide LIST this collector issues.
+//
+// DO NOT REMOVE THIS. Without a resourceVersion the kube-apiserver treats a
+// LIST as "most recent" and satisfies it with a quorum read straight out of
+// etcd; at one sample per interval, on every agent, that is a standing load on
+// the cluster's consensus store for numbers nobody reads twice. With
+// resourceVersion=0 the apiserver answers from its in-memory watch cache
+// instead. The documented cost is that the answer may lag the true state by a
+// short moment — which for a node/pod counter sampled every few seconds is
+// exactly the right trade, and is why this must not be "fixed" back into a
+// quorum read.
+const watchCacheList = "?resourceVersion=0"
+
 func (k *K8s) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.apiURL+path, nil)
 	if err != nil {
@@ -54,7 +67,7 @@ func (k *K8s) Collect(ctx context.Context) ([]Sample, error) {
 			} `json:"status"`
 		} `json:"items"`
 	}
-	if err := k.get(ctx, "/api/v1/nodes", &nodes); err != nil {
+	if err := k.get(ctx, "/api/v1/nodes"+watchCacheList, &nodes); err != nil {
 		return nil, err
 	}
 	ready := 0.0
@@ -76,7 +89,7 @@ func (k *K8s) Collect(ctx context.Context) ([]Sample, error) {
 			} `json:"status"`
 		} `json:"items"`
 	}
-	if err := k.get(ctx, "/api/v1/pods", &pods); err != nil {
+	if err := k.get(ctx, "/api/v1/pods"+watchCacheList, &pods); err != nil {
 		return nil, err
 	}
 	running, failed, restarts := 0.0, 0.0, 0.0

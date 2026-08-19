@@ -46,3 +46,50 @@ func TestK8sCollectsNodeAndPodHealth(t *testing.T) {
 		}
 	}
 }
+
+// Both cluster-wide LISTs must ask for resourceVersion=0 so the apiserver
+// answers from its watch cache instead of forcing a quorum read out of etcd on
+// every sample. Sampling every few seconds, a slightly stale count is fine; an
+// etcd quorum read per interval is not.
+func TestK8sListsRequestWatchCacheReads(t *testing.T) {
+	type seen struct {
+		path            string
+		resourceVersion string
+		present         bool
+	}
+	var got []seen
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		rv, ok := q["resourceVersion"]
+		s := seen{path: r.URL.Path, present: ok}
+		if ok {
+			s.resourceVersion = rv[0]
+		}
+		got = append(got, s)
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer srv.Close()
+
+	k := NewK8s(srv.URL, "satoken")
+	if _, err := k.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/api/v1/nodes", "/api/v1/pods"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d LIST calls, got %d: %+v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i].path != w {
+			t.Fatalf("call %d: path = %q, want %q", i, got[i].path, w)
+		}
+		if !got[i].present {
+			t.Errorf("call %d (%s): no resourceVersion query param — this forces an etcd quorum read every sample", i, w)
+			continue
+		}
+		if got[i].resourceVersion != "0" {
+			t.Errorf("call %d (%s): resourceVersion = %q, want %q", i, w, got[i].resourceVersion, "0")
+		}
+	}
+}
