@@ -13,6 +13,7 @@ services:
       FW_LISTEN: ":8443"
       FW_PUBLIC_URL: "http://mother:8443"
       FW_API_KEY: dev-api-key
+    restart: unless-stopped
     volumes: [ "mother-data:/data" ]
     ports: [ "8443:8443" ]
     # Also joined to the shared `feast-watch` network so the feast backend's
@@ -23,6 +24,15 @@ services:
     networks: [ default, feast-watch ]
 
   agent-1:
+    # Without this the self-update is a one-way door here. The agent's update
+    # path ends in exit(0) and leaves the restart to the service manager —
+    # Restart=always, RestartSec=5 in deploy/feast-watch-agent.service. A
+    # container has no service manager, so an agent that took a rollout target
+    # replaced its binary, exited cleanly and never came back: the row sat at
+    # "pending" with no error, because an agent that is gone cannot report that
+    # it is gone. `unless-stopped` rather than `always` so `docker compose stop`
+    # still means stopped.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.agent
@@ -31,6 +41,9 @@ services:
     volumes: [ "./e2e/agent-1.conf:/etc/feast-watch/agent.conf:ro" ]
 
   agent-2:
+    # Same as agent-1: self-update ends in exit(0) and needs something to
+    # bring the process back.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.agent
