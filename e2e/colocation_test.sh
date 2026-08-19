@@ -83,5 +83,29 @@ FW_ROOT="$ROOT" bash deploy/mother-uninstall.sh --purge > /dev/null 2>&1 || fail
 FW_ROOT="$ROOT" bash mother/api/uninstall.sh --purge > /dev/null 2>&1 || fail "agent uninstaller failed on a clean host"
 pass "both re-run cleanly"
 
+# An agent can be installed two ways — the script the mother serves, and
+# mother-install.sh --with-agent on the mother's own host — and the uninstaller
+# is written by the installer, not carried in the binary. So a file one path
+# creates and the other forgets is a host that cannot be removed from the
+# panel: a delete is answered on the agent's next push, and the agent's answer
+# is to exec /usr/local/sbin/feast-watch-agent-uninstall.
+#
+# That is not hypothetical. --with-agent shipped without the uninstaller and
+# without the manifest, which made the mother's own host the one machine in the
+# fleet that could only ever report "uninstaller ... is not on this host".
+step "5. both installers declare the same footprint"
+manifest_of() { sed -n '/install-manifest <<EOF/,/^EOF$/p;/# What this installer created/,/^  } > "\$AGENT_MANIFEST"/p' "$1"; }
+for key in bin conf unit uninstaller; do
+  manifest_of mother/api/install.sh.tmpl | grep -q "^$key=" ||
+    fail "the served installer's manifest has no '$key'"
+  manifest_of deploy/mother-install.sh | grep -q "\"$key=" ||
+    fail "mother-install.sh --with-agent does not record '$key' — a file it creates or forgets that the uninstaller will not clean"
+done
+pass "manifests agree on bin, conf, unit, uninstaller"
+
+grep -q 'install -m 0755 "$src" "$AGENT_UNINSTALLER"' deploy/mother-install.sh ||
+  fail "--with-agent does not install the uninstaller; the mother's own host could not be removed from the panel"
+pass "--with-agent installs the uninstaller"
+
 echo
 echo "all checks passed"

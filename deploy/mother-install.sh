@@ -34,6 +34,8 @@ UNIT="$FW_ROOT/etc/systemd/system/feast-watch-mother.service"
 UNIT_NAME=feast-watch-mother.service
 AGENT_UNIT="$FW_ROOT/etc/systemd/system/feast-watch-agent.service"
 AGENT_UNIT_NAME=feast-watch-agent.service
+AGENT_UNINSTALLER="$FW_ROOT/usr/local/sbin/feast-watch-agent-uninstall"
+AGENT_MANIFEST="$CONF_DIR/install-manifest"
 SERVICE_USER=feast-watch
 
 seed_env_file() {
@@ -110,10 +112,46 @@ install_local_agent() {
     echo "   wrote $AGENT_CONF"
   fi
 
+  install_agent_uninstaller
+
   echo "-> installing agent unit"
   install -m 0644 "$(dirname "$0")/feast-watch-agent.service" "$AGENT_UNIT"
   systemctl daemon-reload
   systemctl enable --now "$AGENT_UNIT_NAME"
+}
+
+# install_agent_uninstaller puts the uninstaller and the manifest on disk, the
+# way the served installer does.
+#
+# Without this, the mother's own host is the one machine in the fleet that
+# cannot be removed from the panel. Deleting a server is answered on the
+# agent's next push, and the agent's response is to exec this exact path
+# (agent.DefaultUninstaller); missing, it can only report
+# "uninstaller ... is not on this host" and the row sits in "uninstalling"
+# for good.
+#
+# The script is taken from mother/api/uninstall.sh — the same file the mother
+# embeds and serves at /uninstall.sh — so a host installed by either path gets
+# byte-identical removal behaviour.
+install_agent_uninstaller() {
+  local src="$(dirname "$0")/../mother/api/uninstall.sh"
+  [ -f "$src" ] || { echo "uninstall script not found at $src" >&2; return 1; }
+
+  echo "-> installing agent uninstaller"
+  mkdir -p "$(dirname "$AGENT_UNINSTALLER")"
+  install -m 0755 "$src" "$AGENT_UNINSTALLER"
+
+  # Same keys as the served installer writes: the uninstaller reads this to
+  # clean a host installed by an older version of either path.
+  {
+    echo "# What this installer created. No secrets: the token lives in agent.conf."
+    echo "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "bin=/usr/local/bin/feast-watch-agent"
+    echo "conf=/etc/feast-watch/agent.conf"
+    echo "unit=/etc/systemd/system/feast-watch-agent.service"
+    echo "uninstaller=/usr/local/sbin/feast-watch-agent-uninstall"
+  } > "$AGENT_MANIFEST"
+  chmod 0644 "$AGENT_MANIFEST"
 }
 
 main() {
