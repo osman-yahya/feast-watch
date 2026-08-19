@@ -9,7 +9,7 @@ func TestSettingsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Settings{Interval: 10, HeartbeatMissThreshold: 3,
-		Retention1mDays: 15, Retention1hDays: 75, LiveWindowMinutes: 15}
+		Retention1mDays: 15, Retention1hDays: 75, LiveWindowMinutes: DefaultLiveWindowMinutes}
 	if got != want {
 		t.Fatalf("defaults: got %+v want %+v", got, want)
 	}
@@ -58,7 +58,11 @@ func TestSettingsLiveWindowDefaultsOnAnOlderDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.LiveWindowMinutes != 15 {
-		t.Fatalf("live window on an older database = %d, want the default 15", got.LiveWindowMinutes)
+	// The constant, not a literal: this test is about the fallback happening
+	// at all, and pinning the number here would fail every time the default
+	// is retuned for a reason that has nothing to do with older databases.
+	if got.LiveWindowMinutes != DefaultLiveWindowMinutes {
+		t.Fatalf("live window on an older database = %d, want the default %d",
+			got.LiveWindowMinutes, DefaultLiveWindowMinutes)
 	}
 }

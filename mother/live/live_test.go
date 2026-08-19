@@ -203,3 +203,94 @@ func TestConcurrentUseIsSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// SeriesSince is what makes a polling reader cheap: the page holds the window
+// already, so every poll after the first one should cost the handful of points
+// that arrived since, not a copy of the whole buffer.
+func TestSeriesSinceReturnsOnlyNewerPoints(t *testing.T) {
+	s, c := newTestStore(5 * time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 1})
+	c.add(10 * time.Second)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 2})
+	c.add(10 * time.Second)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 3})
+
+	// Strictly newer: a reader passes back the timestamp it already holds, so
+	// returning that point again would duplicate the last sample on every poll.
+	got := s.SeriesSince(1, "cpu.usage", 1_700_000_010)
+	want := []Point{{TS: 1_700_000_020, Value: 3}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("SeriesSince = %+v, want %+v", got, want)
+	}
+}
+
+// since=0 means "I hold nothing" — the first poll — and must behave exactly
+// like Series. Timestamps are unix seconds, so 0 is never a real sample.
+func TestSeriesSinceZeroReturnsTheWholeWindow(t *testing.T) {
+	s, c := newTestStore(5 * time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 1})
+	c.add(10 * time.Second)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 2})
+
+	if got, want := s.SeriesSince(1, "cpu.usage", 0), s.Series(1, "cpu.usage"); len(got) != len(want) {
+		t.Fatalf("SeriesSince(0) returned %d points, Series returned %d", len(got), len(want))
+	}
+}
+
+// A reader whose `since` predates the window gets everything the store still
+// holds, not an error and not silence: a tab left in the background for an
+// hour must recover by being handed the current window.
+func TestSeriesSinceOlderThanTheWindowReturnsWhatSurvives(t *testing.T) {
+	s, c := newTestStore(time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 1})
+	c.add(2 * time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 2})
+
+	got := s.SeriesSince(1, "cpu.usage", 1_700_000_000-3600)
+	if len(got) != 1 || got[0].Value != 2 {
+		t.Fatalf("SeriesSince from before the window = %+v, want the surviving point only", got)
+	}
+}
+
+// A `since` at or after the newest point is the steady state of a poll that
+// arrived before the next push: nothing new, and nothing is an empty result
+// rather than a repeat of the last point.
+func TestSeriesSinceAtTheNewestPointReturnsNothing(t *testing.T) {
+	s, c := newTestStore(5 * time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 1})
+
+	if got := s.SeriesSince(1, "cpu.usage", c.t.Unix()); len(got) != 0 {
+		t.Fatalf("SeriesSince at the newest point = %+v, want nothing", got)
+	}
+	if got := s.SeriesSince(1, "cpu.usage", c.t.Unix()+60); len(got) != 0 {
+		t.Fatalf("SeriesSince in the future = %+v, want nothing", got)
+	}
+}
+
+// Same aliasing guarantee as Series: the caller may sort or truncate what it
+// gets back without corrupting the buffer for the next reader.
+func TestSeriesSinceReturnsACopy(t *testing.T) {
+	s, c := newTestStore(time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 12})
+
+	got := s.SeriesSince(1, "cpu.usage", 0)
+	got[0].Value = 999
+	if again := s.Series(1, "cpu.usage"); again[0].Value != 12 {
+		t.Fatalf("stored point was mutated through the returned slice: %+v", again)
+	}
+}
+
+// Eviction runs on this read too. Without it a dead agent's last samples would
+// stay answerable forever to a reader that keeps asking with an old `since`.
+func TestSeriesSinceEvictsExpiredPoints(t *testing.T) {
+	s, c := newTestStore(time.Minute)
+	s.Add(1, c.t.Unix(), map[string]float64{"cpu.usage": 1})
+	c.add(2 * time.Minute)
+
+	if got := s.SeriesSince(1, "cpu.usage", 0); len(got) != 0 {
+		t.Fatalf("expired points survived SeriesSince: %+v", got)
+	}
+	if n := s.MetricCount(1); n != 0 {
+		t.Fatalf("metric count after eviction = %d, want 0", n)
+	}
+}

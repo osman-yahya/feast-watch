@@ -20,6 +20,7 @@
 package live
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -95,16 +96,38 @@ func (s *Store) Add(serverID int64, ts int64, samples map[string]float64) {
 // The result is a copy: callers hand it to a JSON encoder or sort it, and
 // aliasing the live buffer would let one reader corrupt it for every other.
 func (s *Store) Series(serverID int64, metric string) []Point {
+	return s.SeriesSince(serverID, metric, 0)
+}
+
+// SeriesSince returns the points held for one metric that are strictly newer
+// than `since`, oldest first. A since of 0 means "everything", which is what a
+// reader holding nothing yet asks for — timestamps are unix seconds, so 0 is
+// never a real sample.
+//
+// This exists for the polling reader. A page showing the window already holds
+// every point but the last few, so re-sending the whole buffer on a cadence
+// derived from the push interval is the same bytes over and over: an hour of
+// 10-second samples across eight metrics is ~60KB per poll, against a few
+// hundred bytes for what actually changed. Strictly newer, not newer-or-equal,
+// because the reader passes back the newest timestamp it holds and returning
+// that point again would duplicate the last sample on every poll.
+//
+// The result is a copy, for the same reason Series returns one.
+func (s *Store) SeriesSince(serverID int64, metric string, since int64) []Point {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictLocked(serverID)
 
 	src := s.series[serverID][metric]
-	if len(src) == 0 {
+	// Ascending order makes the answer a suffix, so it is found by search
+	// rather than by filtering: a poll that adds one point must not cost a
+	// pass over the whole window.
+	first := sort.Search(len(src), func(i int) bool { return src[i].TS > since })
+	if first == len(src) {
 		return nil
 	}
-	out := make([]Point, len(src))
-	copy(out, src)
+	out := make([]Point, len(src)-first)
+	copy(out, src[first:])
 	return out
 }
 

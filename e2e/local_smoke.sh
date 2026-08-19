@@ -16,7 +16,7 @@
 #   4  groups: create, duplicate-name conflict, membership, filter, bulk clear
 #   5  rollout targets are validated against published GitHub releases
 #   6  a settings payload missing a retention key is refused
-#   7  the live view serves pushes from memory at the cadence they arrived
+#   7  the live view serves pushes from memory, with a cheap `since` poll
 #   8  the push interval an operator sets reaches the agent in its next response
 #   9  deleting a server tells the agent to uninstall itself, and force deletes
 set -euo pipefail
@@ -300,7 +300,7 @@ check_settings_guard() {
 # 7 — the live view: what the rollups deliberately cannot show.
 check_live_view() {
   step "7. live view serves the raw tail from memory"
-  local points window latest
+  local points window latest code
   points=$(api "/api/live?server_id=1&metric=cpu.usage,mem.used_pct" |
     python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["series"]["cpu.usage"]))')
   [ "$points" -ge 2 ] || fail "live series returned $points points, want the last few pushes"
@@ -314,8 +314,30 @@ check_live_view() {
 
   window=$(api "/api/live?server_id=1&metric=cpu.usage" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["window_seconds"])')
-  [ "$window" = "900" ] || fail "live window is $window seconds, want the 900s default"
+  [ "$window" = "3600" ] || fail "live window is $window seconds, want the 3600s default"
   pass "live window reported as $window seconds"
+
+  # The answer carries the clock its timestamps were stamped by, so a reader
+  # slicing "the last five minutes" does not have to trust its own.
+  local server_time
+  server_time=$(api "/api/live?server_id=1&metric=cpu.usage" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["server_time"])')
+  [ "$server_time" -gt 0 ] 2>/dev/null || fail "live response carries no server_time"
+  pass "live response carries the mother's clock ($server_time)"
+
+  # `since` is what makes polling cheap: the second read asks only for what
+  # arrived after the newest point the first one returned.
+  local newest fresh
+  newest=$(api "/api/live?server_id=1&metric=cpu.usage" |
+    python3 -c 'import json,sys; p=json.load(sys.stdin)["data"]["series"]["cpu.usage"]; print(p[-1]["ts"])')
+  fresh=$(api "/api/live?server_id=1&metric=cpu.usage&since=$newest" |
+    python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["series"]["cpu.usage"]))')
+  [ "$fresh" = "0" ] || fail "since=<newest> returned $fresh points, want none"
+  pass "since=<newest> returns nothing rather than repeating the last sample"
+
+  code=$(status_of GET "/api/live?server_id=1&metric=cpu.usage&since=abc")
+  [ "$code" = "400" ] || fail "a malformed since returned $code, want 400"
+  pass "a malformed since is refused"
 
   # The same store feeds the fleet list, which is what the table and the group
   # overview render CPU/RAM from without a request per server.
@@ -325,7 +347,6 @@ check_live_view() {
   pass "fleet list embeds the newest sample (cpu.usage=$latest)"
 
   # The window is a memory budget, so it is bounded at the boundary.
-  local code
   code=$(status_of PUT /api/settings '{"interval":2,"heartbeat_miss_threshold":3,"retention_1m_days":15,"retention_1h_days":75,"live_window_minutes":600}')
   [ "$code" = "400" ] || fail "a 600-minute live window returned $code, want 400"
   pass "an out-of-bounds live window is refused"

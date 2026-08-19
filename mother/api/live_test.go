@@ -6,13 +6,16 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/osman-yahya/feast-watch/mother/store"
 	"github.com/osman-yahya/feast-watch/shared/protocol"
 )
 
 // liveBody is the shape of GET /api/live's data field.
 type liveBody struct {
 	WindowSeconds int64                    `json:"window_seconds"`
+	ServerTime    int64                    `json:"server_time"`
 	Series        map[string][]liveTestPnt `json:"series"`
 }
 
@@ -55,8 +58,9 @@ func TestIngestFeedsTheLiveSeries(t *testing.T) {
 	if len(body.Series["memory.usage"]) != 1 {
 		t.Fatalf("memory series = %+v", body.Series["memory.usage"])
 	}
-	if body.WindowSeconds != 15*60 {
-		t.Fatalf("window_seconds = %d, want the 15-minute default", body.WindowSeconds)
+	if body.WindowSeconds != store.DefaultLiveWindowMinutes*60 {
+		t.Fatalf("window_seconds = %d, want the %d-minute default",
+			body.WindowSeconds, store.DefaultLiveWindowMinutes)
 	}
 }
 
@@ -200,5 +204,93 @@ func TestSettingsRejectLiveWindowOutOfBounds(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("live_window_minutes=%s must 400, got %d", minutes, w.Code)
 		}
+	}
+}
+
+// seedLive puts points straight into the in-memory store. Ingest stamps a push
+// with its own time.Now and refuses a second one inside the same second (and
+// inside the 2s rate limit), so building a multi-point series through the HTTP
+// path would mean sleeping. The store is what these tests are about.
+func seedLive(a *API, serverID int64, metric string, base int64, values ...float64) {
+	for i, v := range values {
+		a.live.Add(serverID, base+int64(i), map[string]float64{metric: v})
+	}
+}
+
+// The polling reader's steady state: it holds the window already and asks only
+// for what arrived since. Anything else re-sends an hour of samples every few
+// seconds for as long as the tab is open.
+func TestLiveSinceReturnsOnlyNewerPoints(t *testing.T) {
+	a, _ := setup(t)
+	base := time.Now().Unix() - 30
+	seedLive(a, 1, "cpu.usage", base, 1, 2, 3)
+
+	_, body := readLive(t, a, fmt.Sprintf("server_id=1&metric=cpu.usage&since=%d", base+1))
+	got := body.Series["cpu.usage"]
+	if len(got) != 1 || got[0].Value != 3 || got[0].TS != base+2 {
+		t.Fatalf("since=%d returned %+v, want only the newest point", base+1, got)
+	}
+}
+
+// A first poll holds nothing, so it sends no `since` at all — and must get the
+// whole window, exactly as it did before the parameter existed.
+func TestLiveWithoutSinceReturnsTheWholeWindow(t *testing.T) {
+	a, _ := setup(t)
+	base := time.Now().Unix() - 30
+	seedLive(a, 1, "cpu.usage", base, 1, 2, 3)
+
+	_, body := readLive(t, a, "server_id=1&metric=cpu.usage")
+	if len(body.Series["cpu.usage"]) != 3 {
+		t.Fatalf("no since returned %+v, want the whole window", body.Series["cpu.usage"])
+	}
+}
+
+// Nothing new is an empty list, not a repeat of the last point: a poll landing
+// between two pushes is the common case, and duplicating the newest sample
+// would draw a flat step onto the chart on every quiet tick.
+func TestLiveSinceAtTheNewestPointReturnsNothing(t *testing.T) {
+	a, _ := setup(t)
+	base := time.Now().Unix() - 30
+	seedLive(a, 1, "cpu.usage", base, 1, 2, 3)
+
+	_, body := readLive(t, a, fmt.Sprintf("server_id=1&metric=cpu.usage&since=%d", base+2))
+	series, ok := body.Series["cpu.usage"]
+	if !ok || series == nil {
+		t.Fatalf("a caught-up reader must still get the key as an empty list: %+v", body.Series)
+	}
+	if len(series) != 0 {
+		t.Fatalf("since at the newest point returned %+v, want nothing", series)
+	}
+}
+
+// Validated at the boundary like server_id. A `since` the caller fat-fingered
+// must not read as 0 and silently turn every poll back into a full window
+// read, which is the failure the parameter exists to prevent.
+func TestLiveRejectsBadSince(t *testing.T) {
+	a, _ := setup(t)
+	for name, query := range map[string]string{
+		"not a number": "server_id=1&metric=cpu.usage&since=abc",
+		"negative":     "server_id=1&metric=cpu.usage&since=-5",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if code, _ := readLive(t, a, query); code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d", code)
+			}
+		})
+	}
+}
+
+// Points are stamped with the MOTHER's clock, so a reader that slices "the
+// last 5 minutes" against its own browser clock slices the wrong window the
+// moment the two disagree. The answer carries the clock the timestamps came
+// from.
+func TestLiveCarriesTheMothersClock(t *testing.T) {
+	a, _ := setup(t)
+	before := time.Now().Unix()
+	_, body := readLive(t, a, "server_id=1&metric=cpu.usage")
+	after := time.Now().Unix()
+
+	if body.ServerTime < before || body.ServerTime > after {
+		t.Fatalf("server_time = %d, want it inside [%d, %d]", body.ServerTime, before, after)
 	}
 }

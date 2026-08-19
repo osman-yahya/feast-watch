@@ -253,14 +253,30 @@ every sample, per server — and served from there:
 ```bash
 curl -sf -H "X-API-Key: $FW_API_KEY" \
   "http://<mother-ip>:8443/api/live?server_id=1&metric=cpu.usage,memory.usage"
+
+# every poll after the first one: only what arrived since
+curl -sf -H "X-API-Key: $FW_API_KEY" \
+  "http://<mother-ip>:8443/api/live?server_id=1&metric=cpu.usage&since=1787155749"
 ```
 
 It reads nothing from SQLite, which is the point: the panel polls it every few
 seconds and never touches the single write connection ingest depends on.
 
-- **Window:** `live_window_minutes` in settings, 1–60, default 15. It is a
+- **Window:** `live_window_minutes` in settings, 1–60, default 60. It is a
   memory budget, not a retention policy — a minute of it is held for every
-  server, so raising it costs RAM on the mother and nothing else.
+  server, so raising it costs RAM on the mother and nothing else. Measured at
+  ~23 bytes per point held: a full hour across 30 servers reporting 17 metrics
+  every 10 seconds is about 2MB, and the 60-minute ceiling is what keeps the
+  arithmetic negligible on a fleet several times that size.
+- **`since=<unix seconds>`** narrows the answer to the points that arrived
+  after a timestamp the caller already holds. It is what makes polling cheap:
+  the first read takes the window, every read after it takes the two or three
+  points that are new. Strictly newer, so passing back the newest timestamp you
+  hold never repeats a sample. Malformed or negative is a 400 rather than a
+  silent fall back to the whole window.
+- **`server_time`** in every answer is the mother's own clock. Points are
+  stamped by that clock, so a caller slicing "the last five minutes" should
+  slice against this rather than against its own — the two drift.
 - **Not persisted, deliberately.** A restart empties it and the next pushes
   refill it within one window. Buying durability would cost a write per push,
   which is exactly the write volume the raw tier was dropped to avoid.

@@ -29,7 +29,18 @@ type Settings struct {
 // DefaultLiveWindowMinutes is the live window a mother runs with until the
 // stored settings are read. Exported because the API constructs its live store
 // before it can read them (see api.New / api.ApplySettings).
-const DefaultLiveWindowMinutes = 15
+//
+// A full hour, which is also the ceiling the API enforces. The panel's live
+// view offers ranges up to an hour, and a default that could not fill the
+// widest one would leave every fresh install with a button that renders a
+// short chart until somebody found the setting. It is affordable: a point
+// costs ~23 bytes held, so an hour across 30 servers reporting 17 metrics
+// every 10 seconds is about 2MB of the mother's memory, and the ceiling exists
+// for the fleets where that arithmetic stops being negligible.
+//
+// Raising this does not touch a mother whose operator has already saved a
+// value — GetSettings only falls back to it for a key that was never written.
+const DefaultLiveWindowMinutes = 60
 
 var defaultSettings = Settings{
 	Interval: 10, HeartbeatMissThreshold: 3,
