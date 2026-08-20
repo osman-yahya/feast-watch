@@ -28,6 +28,21 @@ const Repo = "osman-yahya/feast-watch"
 // assetPrefix is the stem every agent asset shares.
 const assetPrefix = "feast-watch-agent-"
 
+// motherAssetPrefix is the stem every mother asset shares. A separate prefix,
+// not a suffix or a directory, so one string comparison tells the two families
+// apart at every point a name is read.
+const motherAssetPrefix = "feast-watch-mother-"
+
+// Kind is which binary an asset holds. The mother indexes both families out of
+// the same release and must never offer one where the other is meant: an agent
+// handed a mother build would replace itself with the control plane.
+type Kind string
+
+const (
+	KindAgent  Kind = "agent"
+	KindMother Kind = "mother"
+)
+
 // ChecksumSuffix marks the companion file the agent verifies before replacing
 // itself. A release without one is unusable and is never offered.
 const ChecksumSuffix = ".sha256"
@@ -53,6 +68,22 @@ var Platforms = []Platform{
 	{"darwin", "arm64"},
 }
 
+// MotherPlatforms is the mother's build matrix, deliberately narrower than
+// Platforms. The mother is a systemd service on a Linux host — the unit file,
+// deploy/ and the promote helper all assume it — so a darwin or windows build
+// would be a rollout target no supported deployment could apply.
+var MotherPlatforms = []Platform{
+	{"linux", "amd64"},
+	{"linux", "arm64"},
+}
+
+// MotherAssetName is the release asset holding the mother for one platform.
+// Same shape as AssetName, and for the same reason: GitHub scopes assets to
+// their release, so the tag in the URL is what identifies the build.
+func MotherAssetName(goos, goarch string) string {
+	return motherAssetPrefix + goos + "-" + goarch
+}
+
 // AssetName is the release asset for one platform. The version is not in the
 // name because GitHub scopes assets to their release — the tag in the URL is
 // what identifies the build.
@@ -64,19 +95,55 @@ func AssetName(goos, goarch string) string {
 	return assetPrefix + goos + "-" + goarch
 }
 
-// PlatformOf reads the platform back out of an asset name, reporting false for
-// checksum companions, release notes, and anything not in the build matrix.
-func PlatformOf(asset string) (string, bool) {
-	rest, found := strings.CutPrefix(asset, assetPrefix)
-	if !found || strings.HasSuffix(asset, ChecksumSuffix) {
-		return "", false
-	}
+// ExpectedAssets is every file a complete release carries: one binary per
+// platform in the build matrix, each with its checksum companion.
+//
+// It exists so the release workflow can assert what it published instead of
+// trusting that four independent matrix legs all got there. They did not
+// once: a leg that failed its version check while the other three had already
+// uploaded left a release with six of eight assets, and the missing one was
+// linux-amd64 — the platform the served installer fetches. Nothing noticed for
+// 84 minutes, because a release is "created" the moment its first asset lands.
+func ExpectedAssets() []string {
+	out := make([]string, 0, 2*(len(Platforms)+len(MotherPlatforms)))
 	for _, p := range Platforms {
-		if rest == p.String() {
-			return rest, true
+		asset := AssetName(p.GOOS, p.GOARCH)
+		out = append(out, asset, asset+ChecksumSuffix)
+	}
+	for _, p := range MotherPlatforms {
+		asset := MotherAssetName(p.GOOS, p.GOARCH)
+		out = append(out, asset, asset+ChecksumSuffix)
+	}
+	return out
+}
+
+// AssetKindOf reads the family and platform back out of an asset name,
+// reporting false for checksum companions, release notes, and any platform
+// that family is not built for.
+//
+// It replaced PlatformOf when the mother became publishable: a single name
+// space with one prefix could not answer "is this an agent build" without the
+// caller re-parsing the prefix it had just skipped.
+func AssetKindOf(asset string) (Kind, string, bool) {
+	if strings.HasSuffix(asset, ChecksumSuffix) {
+		return "", "", false
+	}
+	if rest, found := strings.CutPrefix(asset, motherAssetPrefix); found {
+		return KindMother, rest, builtFor(MotherPlatforms, rest)
+	}
+	if rest, found := strings.CutPrefix(asset, assetPrefix); found {
+		return KindAgent, rest, builtFor(Platforms, rest)
+	}
+	return "", "", false
+}
+
+func builtFor(platforms []Platform, plat string) bool {
+	for _, p := range platforms {
+		if p.String() == plat {
+			return true
 		}
 	}
-	return "", false
+	return false
 }
 
 // DownloadURL locates one asset of a tagged release.

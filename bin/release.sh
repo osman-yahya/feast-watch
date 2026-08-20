@@ -25,7 +25,7 @@ VERSION=""
 for arg in "$@"; do
   case "$arg" in
     --mother-only) MOTHER_ONLY=1 ;;
-    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
     *) VERSION="$arg" ;;
   esac
@@ -41,6 +41,13 @@ PLATFORMS=(
   linux-arm64
   windows-amd64
   darwin-arm64
+)
+
+# Must match shared/release.MotherPlatforms and the release workflow's
+# build-mother matrix.
+MOTHER_PLATFORMS=(
+  linux-amd64
+  linux-arm64
 )
 
 if [ "$VERSION" = "dev" ] || [[ "$VERSION" == *-dirty ]]; then
@@ -86,6 +93,40 @@ for platform in "${PLATFORMS[@]}"; do
   checksum "$out"
 done
 
+for platform in "${MOTHER_PLATFORMS[@]}"; do
+  goos="${platform%-*}"
+  goarch="${platform#*-}"
+
+  # Named exactly as the release asset, so a locally built mother can be
+  # uploaded to a release by hand if CI is unavailable. Distinct from the
+  # host-native build above, which is what --mother-only produces for a host
+  # being deployed — a different job from publishing.
+  out="$OUT_DIR/feast-watch-mother-$platform"
+  echo "-> building mother $platform"
+  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+    go build -ldflags "$LDFLAGS" -o "$out" ./mother/cmd/feast-watch
+  checksum "$out"
+done
+
+# A tag that only exists on this laptop publishes nothing: the release workflow
+# fires on `push: tags`, so an unpushed tag means no run, no release, no assets
+# and no version in the panel. That is exactly how v1.0.1 was "cut" and then
+# never appeared — the binaries were built here, with the version linked in,
+# and everything looked like a release had happened.
+warn_if_tag_is_local_only() {
+  case "$VERSION" in v*) ;; *) return 0 ;; esac
+  git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null || return 0
+  if ! git ls-remote --tags origin "refs/tags/$VERSION" 2>/dev/null | grep -q .; then
+    echo
+    echo "!! tag $VERSION is not on origin — nothing is published yet." >&2
+    echo "   run: git push origin $VERSION" >&2
+  fi
+}
+
 echo
 echo "built in $OUT_DIR:"
+# shellcheck disable=SC2012  # our own output directory, and every name in
+# it was chosen a few lines above — find(1) buys nothing and -printf is not
+# portable to the macOS this script also runs on.
 ls -1 "$OUT_DIR" | sed 's/^/  /'
+warn_if_tag_is_local_only

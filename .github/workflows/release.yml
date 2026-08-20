@@ -16,23 +16,101 @@ on:
 permissions:
   contents: write
 
+# TAG and LDFLAGS are workflow-level so every job builds, verifies and asserts
+# the same thing. They were job-level, and before that step-level: the verify
+# step once ran `go run` with no -ldflags at all, so it measured a binary
+# nobody ships, always printed the default "dev" and could never pass.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  LDFLAGS: -s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${{ inputs.tag || github.ref_name }}
+
 jobs:
-  build:
+  # Nothing is published until the version is proven to be linked in. This ran
+  # inside one leg of the build matrix, which meant the other three legs had
+  # already uploaded by the time it failed — that is how v1.0.0 spent 84
+  # minutes as a release with six of its eight assets, missing the one platform
+  # the served installer downloads.
+  verify:
     runs-on: ubuntu-latest
-    # TAG and LDFLAGS are job-level so the build and the check that the build
-    # worked cannot drift apart. They did: the verify step below ran `go run`
-    # with no -ldflags at all, so it measured a binary nobody ships, always
-    # printed the default "dev" and could never pass. Nothing caught it because
-    # no tag had been pushed since the step was written — the first real
-    # release, v1.0.0, is what ran it.
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
-      LDFLAGS: -s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: verify the version will be injected
+        # A binary built without -ldflags reports "dev" forever, so no agent can
+        # ever satisfy a rollout target. The failure this guards is a wrong -X
+        # import path, which the linker accepts in silence, so the check has to
+        # use the SAME $LDFLAGS the assets are built with.
+        #
+        # printversion rather than the agent itself: the agent has no --version
+        # and only the host-native build could be run here anyway.
+        run: |
+          go run -ldflags "$LDFLAGS" ./.github/tools/printversion | tee /tmp/v
+          grep -qx "$TAG" /tmp/v || { echo "version not injected"; exit 1; }
+
+  # The release object has to exist before anything can be uploaded to it, and
+  # nothing in this repository ever created one. `gh release upload` against a
+  # tag with no release prints "release not found" and exits non-zero, so the
+  # documented procedure — tag, push, let CI do the rest — could not publish a
+  # release at all. v1.0.0 only worked because a human ran `gh release create`
+  # by hand, one second before the workflow started.
+  #
+  # One job rather than a step in the matrix: four legs racing to create the
+  # same release is four ways to get a 422 and a red run.
+  prepare:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: create the release, or refuse to overwrite a published one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+            echo "created release $TAG"
+            exit 0
+          fi
+
+          # The release already exists. That is normal for a re-run and for a
+          # release drafted by hand, but a tag PUSH onto a release that already
+          # carries assets means the tag was moved — and the upload below uses
+          # --clobber, which deletes the existing assets first. v1.0.0 was
+          # moved across three commits that way, so "v1.0.0" now names three
+          # different binaries with nothing on GitHub recording that the bytes
+          # changed. Agents compare versions as strings (agent/loop.go), so a
+          # fleet can never reconcile that: every agent reports v1.0.0, the
+          # rollout target says v1.0.0, and they match while running different
+          # code. Re-running deliberately is what workflow_dispatch is for.
+          assets=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          if [ "$assets" -gt 0 ] && [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "release $TAG already has $assets assets and this run came from a tag push." >&2
+            echo "Moving a published tag would replace binaries that agents already run." >&2
+            echo "Cut a new tag, or re-run this workflow from workflow_dispatch on purpose." >&2
+            exit 1
+          fi
+          echo "reusing release $TAG ($assets assets)"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
     strategy:
+      # Every leg uploads to the same release, so one leg dying must not cancel
+      # the others mid-upload and leave a partial set behind. The assert job
+      # below is what turns an incomplete release into a red run.
+      fail-fast: false
       matrix:
         # Must match shared/release.Platforms — the mother offers exactly what
         # this builds, so a platform here and not there (or the reverse) means
-        # a rollout target whose asset was never uploaded.
+        # a rollout target whose asset was never uploaded. The assert job reads
+        # that list back out of the Go package rather than trusting this one.
         include:
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
@@ -61,24 +139,80 @@ jobs:
           # uploaded without one is a rollout target that can only ever fail.
           sha256sum "$asset" | cut -d' ' -f1 > "$asset.sha256"
 
-      - name: verify the version was injected
-        # A binary built without -ldflags reports "dev" forever, so no agent can
-        # ever satisfy a rollout target. The failure this guards is a wrong -X
-        # import path, which the linker accepts in silence, so the check has to
-        # use the SAME $LDFLAGS the asset was built with — a rebuild with its
-        # own copy of the flags would prove nothing about the shipped binary.
-        #
-        # printversion rather than the agent itself: the agent has no --version
-        # and only the host-native build could be run here anyway.
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: |
-          go run -ldflags "$LDFLAGS" ./.github/tools/printversion | tee /tmp/v
-          grep -qx "$TAG" /tmp/v || { echo "version not injected"; exit 1; }
-
       - name: upload assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           asset="feast-watch-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
           # --clobber so a re-run replaces a partial upload instead of failing.
+          # Reaching a moved tag is prevented in `prepare`, not here.
           gh release upload "$TAG" "$asset" "$asset.sha256" --clobber
+
+  # The mother's matrix is narrower than the agent's on purpose: it is a systemd
+  # service on a Linux host — the unit, deploy/ and the promote helper all
+  # assume it — so a darwin build would be a rollout target nothing could apply.
+  # Must match shared/release.MotherPlatforms; the assert job reads that list
+  # back out of the Go package rather than trusting this one.
+  build-mother:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build mother
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          asset="feast-watch-mother-${GOOS}-${GOARCH}"
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "$asset" ./mother/cmd/feast-watch
+          # The mother refuses to stage a build it cannot verify, so an asset
+          # uploaded without its checksum is a target that can only ever fail.
+          sha256sum "$asset" | cut -d' ' -f1 > "$asset.sha256"
+
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="feast-watch-mother-${{ matrix.goos }}-${{ matrix.goarch }}"
+          gh release upload "$TAG" "$asset" "$asset.sha256" --clobber
+
+  # A release is "created" the moment its first asset lands, so a half-uploaded
+  # one looks finished from the outside: the mother indexes it, the panel offers
+  # it as a rollout target, and only the agents on the missing platform find out.
+  # This is the step that says so out loud.
+  assert:
+    needs: [build, build-mother]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: every expected asset is on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > /tmp/have
+          go run ./.github/tools/assetnames | sort > /tmp/want
+          if ! missing=$(comm -23 /tmp/want /tmp/have) || [ -n "$missing" ]; then
+            echo "release $TAG is missing assets:" >&2
+            echo "$missing" >&2
+            exit 1
+          fi
+          echo "release $TAG carries all $(wc -l < /tmp/want | tr -d ' ') expected assets"
