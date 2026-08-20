@@ -141,6 +141,8 @@ check_plain_http() {
   # The served installer must fetch binaries from the release host, not here.
   local script
   script=$(curl -sf "$BASE/install/$TOKEN.sh")
+  # shellcheck disable=SC2016  # the pattern is the literal text we are
+  # asserting is ABSENT from the served installer, not a variable to expand.
   case "$script" in
     *'$MOTHER_URL/download'*) fail "installer still downloads binaries from the mother" ;;
     *"RELEASE_BASE_URL=https://github.com/"*) pass "installer downloads from GitHub Releases" ;;

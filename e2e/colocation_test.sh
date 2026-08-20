@@ -94,6 +94,8 @@ pass "both re-run cleanly"
 # without the manifest, which made the mother's own host the one machine in the
 # fleet that could only ever report "uninstaller ... is not on this host".
 step "5. both installers declare the same footprint"
+# shellcheck disable=SC2016  # $AGENT_MANIFEST is matched literally, as it
+# appears inside the installer being read — expanding it here matches nothing.
 manifest_of() { sed -n '/install-manifest <<EOF/,/^EOF$/p;/# What this installer created/,/^  } > "\$AGENT_MANIFEST"/p' "$1"; }
 for key in bin conf unit uninstaller; do
   manifest_of mother/api/install.sh.tmpl | grep -q "^$key=" ||
@@ -103,6 +105,8 @@ for key in bin conf unit uninstaller; do
 done
 pass "manifests agree on bin, conf, unit, uninstaller"
 
+# shellcheck disable=SC2016  # the literal line as it is written in the script
+# under test; expanding $src/$AGENT_UNINSTALLER here would match nothing.
 grep -q 'install -m 0755 "$src" "$AGENT_UNINSTALLER"' deploy/mother-install.sh ||
   fail "--with-agent does not install the uninstaller; the mother's own host could not be removed from the panel"
 pass "--with-agent installs the uninstaller"
