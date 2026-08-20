@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Install a staged mother binary, as root, before the service starts.
+#
+# This is the privileged half of the mother's self-update. The mother runs as an
+# unprivileged user under ProtectSystem=strict, so /usr/local/bin is read-only
+# inside its mount namespace whatever the file permissions say: it can download
+# and verify a new binary, but it cannot install one. It stages the verified
+# file inside its StateDirectory and exits; systemd restarts the unit and runs
+# this from ExecStartPre with a `+` prefix, which means as root and outside the
+# sandbox.
+#
+# It runs on EVERY start, including ordinary ones. That is deliberate — it is
+# what makes a half-finished update impossible: either a staged file is there
+# and becomes the binary, or there is nothing to do.
+#
+# It never fails the boot. A mother that cannot be upgraded must still start:
+# a running mother reports the failure to the panel, and a dead one cannot.
+set -uo pipefail
+
+# FW_ROOT prefixes every path. Empty in production; e2e/promote_test.sh sets it
+# to a temp tree so this can be exercised without being root.
+FW_ROOT="${FW_ROOT:-}"
+
+BIN="$FW_ROOT/usr/local/bin/feast-watch"
+STAGED="$FW_ROOT/var/lib/feast-watch/update/feast-watch.new"
+BACKUP="$BIN.bak"
+
+[ -f "$STAGED" ] || exit 0
+
+# An empty or unreadable staged file is not a binary. Clearing it rather than
+# leaving it is what stops it being retried on every start forever.
+if [ ! -s "$STAGED" ]; then
+  echo "feast-watch promote: staged file is empty; discarding" >&2
+  rm -f "$STAGED"
+  exit 0
+fi
+
+if [ -f "$BIN" ]; then
+  # Kept for a manual rollback. If the new binary will not start, systemd will
+  # restart it forever and the panel is down with it; this is the way back.
+  cp -p "$BIN" "$BACKUP" || echo "feast-watch promote: could not keep a backup" >&2
+fi
+
+if install -m 0755 "$STAGED" "$BIN"; then
+  echo "feast-watch promote: installed the staged binary"
+  rm -f "$STAGED"
+else
+  echo "feast-watch promote: could not install the staged binary" >&2
+  # Deliberately left in place: the mother reports "staged but not running" on
+  # its next boot, and the attempt bound stops it after three.
+fi
+
+exit 0

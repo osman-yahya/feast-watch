@@ -72,6 +72,23 @@ CREATE TABLE IF NOT EXISTS server_group_members (
   PRIMARY KEY (group_id, server_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_group_members_server ON server_group_members(server_id);
+-- The mother's own rollout intent. One row, enforced by the CHECK: there is one
+-- mother per deployment, and "which version should I be" is a property of the
+-- process rather than of a collection.
+--
+-- Deliberately NOT in the settings table. GetSettings runs strconv.Atoi over every
+-- stored value, so a version string there would not merely display wrong — it
+-- would fail every settings read in the mother, taking the heartbeat threshold
+-- and the retention sweep down with it.
+CREATE TABLE IF NOT EXISTS mother_update (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  desired_version TEXT    NOT NULL DEFAULT '',
+  staged_version  TEXT    NOT NULL DEFAULT '',
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  error           TEXT    NOT NULL DEFAULT '',
+  requested_at    INTEGER NOT NULL DEFAULT 0,
+  applied_at      INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

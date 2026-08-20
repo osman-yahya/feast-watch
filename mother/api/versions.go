@@ -26,6 +26,19 @@ type versionView struct {
 	// good answer rather than a current one.
 	CheckedAt time.Time `json:"checked_at"`
 	Stale     bool      `json:"stale"`
+
+	// The mother's own rollout: what it could become, what it was told to
+	// become, and how that is going. Added alongside the agent fields rather
+	// than in a nested object so an older panel reading this payload is
+	// unaffected.
+	//
+	// MotherPlatform is what a build must cover for a version to be
+	// selectable, and is empty where self-update is unavailable at all.
+	MotherBuilds         []release.Build `json:"mother_builds"`
+	MotherPlatform       string          `json:"mother_platform"`
+	MotherDesiredVersion string          `json:"mother_desired_version"`
+	MotherUpdateState    string          `json:"mother_update_state"`
+	MotherUpdateError    string          `json:"mother_update_error"`
 }
 
 func (a *API) registerVersions(mux *http.ServeMux) {
@@ -44,11 +57,22 @@ func platform(srv store.Server) string {
 
 func (a *API) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	snap := a.releases.Snapshot()
+	row, err := a.st.MotherUpdate()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, nil, "storage failure")
+		return
+	}
 	writeJSON(w, http.StatusOK, versionView{
 		MotherVersion: version.Version,
 		Agents:        snap.Builds,
 		CheckedAt:     snap.CheckedAt,
 		Stale:         snap.Stale,
+
+		MotherBuilds:         snap.Mother,
+		MotherPlatform:       a.motherPlatform(),
+		MotherDesiredVersion: row.DesiredVersion,
+		MotherUpdateState:    motherUpdateState(row, version.Version, a.motherUpdateSupported()),
+		MotherUpdateError:    row.Error,
 	}, "")
 }
 

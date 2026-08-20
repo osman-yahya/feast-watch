@@ -20,6 +20,11 @@ set -euo pipefail
 FW_ROOT="${FW_ROOT:-}"
 
 BIN="$FW_ROOT/usr/local/bin/feast-watch"
+# The self-update's footprint: the root helper the unit runs before every start,
+# and the previous binary it keeps for a rollback. The staging directory lives
+# inside STATE_DIR and goes with it.
+PROMOTE="$FW_ROOT/usr/local/sbin/feast-watch-mother-promote"
+BACKUP="$BIN.bak"
 CONF_DIR="$FW_ROOT/etc/feast-watch"
 UNIT="$FW_ROOT/etc/systemd/system/feast-watch-mother.service"
 UNIT_NAME=feast-watch-mother.service
@@ -104,6 +109,8 @@ main() {
   remove "$UNIT"
   reload_systemd
   remove "$BIN"
+  remove "$BACKUP"
+  remove "$PROMOTE"
 
   if [ "$purge" -eq 1 ]; then
     remove "$STATE_DIR"

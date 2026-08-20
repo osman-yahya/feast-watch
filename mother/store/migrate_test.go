@@ -153,11 +153,9 @@ func TestNewestMigrationReachesAnAlreadyMigratedDatabase(t *testing.T) {
 	if _, err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	// Rewind one version and drop what the last migration added, standing the
-	// database exactly where the previous release left it.
-	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)-1)); err != nil {
-		t.Fatal(err)
-	}
+	// Rewind to just before the migration under test and drop what it added,
+	// standing the database exactly where the release before it left off.
+	rewindTo(t, db, "servers: two-phase uninstall")
 	for _, col := range []string{"uninstall_requested_at", "uninstall_error"} {
 		if _, err := db.Exec(`ALTER TABLE servers DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)
@@ -172,4 +170,49 @@ func TestNewestMigrationReachesAnAlreadyMigratedDatabase(t *testing.T) {
 		 VALUES ('web-9','tk_9','[]',1,0,'')`); err != nil {
 		t.Fatalf("the newest migration did not reach an already-migrated database: %v", err)
 	}
+}
+
+// A live database predates the mother's own rollout table. Migration has to
+// add it, and running twice must be a no-op — migrate runs on every start.
+func TestMigrationAddsMotherUpdateToAnOlderDatabase(t *testing.T) {
+	db := legacyDB(t)
+	if _, err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	rewindTo(t, db, "mother: its own rollout intent")
+	if _, err := db.Exec(`DROP TABLE mother_update`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate(db); err != nil {
+		t.Fatalf("a second migrate must be a no-op: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO mother_update (id, desired_version) VALUES (1, 'v1.4.0')`); err != nil {
+		t.Fatalf("the migration did not reach an already-migrated database: %v", err)
+	}
+}
+
+// rewindTo sets user_version so the named migration, and everything after it,
+// runs again.
+//
+// By name rather than by len(migrations)-N: a test pinned to the end of the
+// list silently changes which migration it exercises the moment another one is
+// appended, which is exactly what happened when the mother's rollout table was
+// added under a test that believed it was still testing the uninstall columns.
+func rewindTo(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	for i, m := range migrations {
+		if m.name != name {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i)); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("no migration named %q", name)
 }

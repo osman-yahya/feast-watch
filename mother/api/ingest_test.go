@@ -27,21 +27,36 @@ func setup(t *testing.T) (*API, *store.Store) {
 // emptyReleases is an index that has never seen a release — the state of a
 // mother that has not yet reached GitHub.
 func emptyReleases() *release.Cache {
-	return release.NewCache(staticSource(nil), time.Now)
+	return release.NewCache(staticSource{}, time.Now)
 }
 
 // withReleases builds an index holding exactly these builds, standing in for
 // what the GitHub poller would have published.
 func withReleases(builds ...release.Build) *release.Cache {
-	c := release.NewCache(staticSource(builds), time.Now)
+	c := release.NewCache(staticSource{agents: builds}, time.Now)
 	c.Seed(builds)
 	return c
 }
 
-type staticSource []release.Build
+type staticSource struct {
+	agents []release.Build
+	mother []release.Build
+}
 
-func (s staticSource) Fetch(context.Context) ([]release.Build, bool, error) {
-	return []release.Build(s), false, nil
+func (s staticSource) Fetch(context.Context) ([]release.Build, []release.Build, bool, error) {
+	return s.agents, s.mother, false, nil
+}
+
+// withBothReleases publishes an index holding both families. It goes through
+// Refresh rather than Seed because Seed deliberately offers no mother builds —
+// a mother with no route to the release host cannot fetch its own replacement,
+// so seeding it a target would buy nothing but failed attempts.
+func withBothReleases(agents, mother []release.Build) *release.Cache {
+	c := release.NewCache(staticSource{agents: agents, mother: mother}, time.Now)
+	if err := c.Refresh(context.Background()); err != nil {
+		panic(err)
+	}
+	return c
 }
 
 func postIngest(t *testing.T, h http.Handler, token string, req protocol.IngestRequest) *httptest.ResponseRecorder {

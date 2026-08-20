@@ -57,7 +57,7 @@ func TestFetchIndexesPublishedReleasesOnly(t *testing.T) {
 	srv := apiServer(t, releasesJSON, "", nil)
 	defer srv.Close()
 
-	builds, _, err := NewClient(srv.URL, false).Fetch(context.Background())
+	builds, _, _, err := NewClient(srv.URL, false).Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestFetchCanIncludePrereleases(t *testing.T) {
 	srv := apiServer(t, releasesJSON, "", nil)
 	defer srv.Close()
 
-	builds, _, err := NewClient(srv.URL, true).Fetch(context.Background())
+	builds, _, _, err := NewClient(srv.URL, true).Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestFetchOrdersNewestFirst(t *testing.T) {
 	srv := apiServer(t, releasesJSON, "", nil)
 	defer srv.Close()
 
-	builds, _, err := NewClient(srv.URL, false).Fetch(context.Background())
+	builds, _, _, err := NewClient(srv.URL, false).Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +129,10 @@ func TestFetchSendsTheStoredETagAndReportsNotModified(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, false)
-	if _, notModified, err := client.Fetch(context.Background()); err != nil || notModified {
+	if _, _, notModified, err := client.Fetch(context.Background()); err != nil || notModified {
 		t.Fatalf("first fetch: notModified=%v err=%v", notModified, err)
 	}
-	_, notModified, err := client.Fetch(context.Background())
+	_, _, notModified, err := client.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestFetchSurfacesAnAPIFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := NewClient(srv.URL, false).Fetch(context.Background()); err == nil {
+	if _, _, _, err := NewClient(srv.URL, false).Fetch(context.Background()); err == nil {
 		t.Fatal("a 403 must surface as an error, not as an empty release list")
 	}
 }
@@ -161,7 +161,7 @@ func TestFetchRejectsAMalformedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := NewClient(srv.URL, false).Fetch(context.Background()); err == nil {
+	if _, _, _, err := NewClient(srv.URL, false).Fetch(context.Background()); err == nil {
 		t.Fatal("a non-JSON body must error")
 	}
 }
@@ -170,5 +170,81 @@ func TestReleasesJSONFixtureIsValid(t *testing.T) {
 	var v []any
 	if err := json.Unmarshal([]byte(releasesJSON), &v); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// One release carries both families. They are indexed apart because an agent
+// handed a mother build would replace itself with the control plane.
+const bothFamiliesJSON = `[
+  {"tag_name":"v1.4.0","draft":false,"prerelease":false,"assets":[
+    {"name":"feast-watch-agent-linux-amd64"},
+    {"name":"feast-watch-agent-linux-amd64.sha256"},
+    {"name":"feast-watch-agent-darwin-arm64"},
+    {"name":"feast-watch-agent-darwin-arm64.sha256"},
+    {"name":"feast-watch-mother-linux-amd64"},
+    {"name":"feast-watch-mother-linux-amd64.sha256"},
+    {"name":"feast-watch-mother-linux-arm64"},
+    {"name":"feast-watch-mother-linux-arm64.sha256"}]},
+  {"tag_name":"v1.0.1","draft":false,"prerelease":false,"assets":[
+    {"name":"feast-watch-agent-linux-amd64"},
+    {"name":"feast-watch-agent-linux-amd64.sha256"}]},
+  {"tag_name":"v1.2.0","draft":false,"prerelease":false,"assets":[
+    {"name":"feast-watch-agent-linux-amd64"},
+    {"name":"feast-watch-agent-linux-amd64.sha256"},
+    {"name":"feast-watch-mother-linux-amd64"}]}
+]`
+
+func TestFetchSplitsTheTwoFamilies(t *testing.T) {
+	srv := apiServer(t, bothFamiliesJSON, "", nil)
+	defer srv.Close()
+
+	agents, mother, _, err := NewClient(srv.URL, false).Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(agents) != 3 {
+		t.Fatalf("every release carries an agent build: %+v", agents)
+	}
+	if len(agents[0].Platforms) != 2 {
+		t.Fatalf("v1.4.0 agent platforms: %+v", agents[0])
+	}
+
+	// v1.0.1 has no mother build at all — every release published before the
+	// mother became publishable looks like that. v1.2.0 has a mother binary
+	// with no checksum, which is a target that could only ever fail.
+	if len(mother) != 1 || mother[0].Version != "v1.4.0" {
+		t.Fatalf("mother: %+v", mother)
+	}
+	if len(mother[0].Platforms) != 2 ||
+		mother[0].Platforms[0] != "linux-amd64" || mother[0].Platforms[1] != "linux-arm64" {
+		t.Fatalf("mother platforms: %+v", mother[0])
+	}
+}
+
+// The rule the agent family has always had, now for the mother: a binary with
+// no checksum is not offered, and its absence must not cost the release its
+// agent builds.
+func TestFetchDropsAMotherBinaryWithNoChecksum(t *testing.T) {
+	srv := apiServer(t, bothFamiliesJSON, "", nil)
+	defer srv.Close()
+
+	agents, mother, _, err := NewClient(srv.URL, false).Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range mother {
+		if b.Version == "v1.2.0" {
+			t.Fatalf("a mother binary with no checksum was offered: %+v", b)
+		}
+	}
+	var sawAgent bool
+	for _, b := range agents {
+		if b.Version == "v1.2.0" {
+			sawAgent = true
+		}
+	}
+	if !sawAgent {
+		t.Fatal("the release's agent build was dropped along with the unusable mother build")
 	}
 }

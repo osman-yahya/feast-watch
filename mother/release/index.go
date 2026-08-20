@@ -6,15 +6,21 @@ import (
 	"time"
 )
 
-// Source is what the cache reads from; the GitHub Client implements it.
+// Source is what the cache reads from; the GitHub Client implements it. The
+// two families come back apart rather than tagged in one list — see Build.
 type Source interface {
-	Fetch(context.Context) ([]Build, bool, error)
+	Fetch(context.Context) (agents, mother []Build, notModified bool, err error)
 }
 
 // Snapshot is an immutable view of the release index, safe to hand to a
 // request handler.
 type Snapshot struct {
-	Builds    []Build   `json:"builds"`
+	Builds []Build `json:"builds"`
+	// Mother is the same list for the mother's own binary. Separate rather
+	// than merged: the mother is built for fewer platforms and is targeted
+	// through a different endpoint, so a merged list would make "which
+	// versions exist" ambiguous at every read.
+	Mother    []Build   `json:"mother"`
 	CheckedAt time.Time `json:"checked_at"`
 	// Stale reports that the last refresh failed, so these builds are the last
 	// known good answer rather than a current one. It is surfaced rather than
@@ -37,35 +43,40 @@ func NewCache(src Source, now func() time.Time) *Cache {
 	return &Cache{
 		src:  src,
 		now:  now,
-		snap: Snapshot{Builds: []Build{}, Stale: true},
+		snap: Snapshot{Builds: []Build{}, Mother: []Build{}, Stale: true},
 	}
 }
 
-// Seed publishes a build list supplied by configuration, so a mother with no
-// route to github.com is still usable. A successful fetch replaces it.
+// Seed publishes an agent build list supplied by configuration, so a mother
+// with no route to github.com can still roll agents out. A successful fetch
+// replaces it.
+//
+// It seeds no mother builds, deliberately. A mother that cannot reach the
+// release host cannot download its own replacement either, so offering itself
+// a target would buy nothing but a bounded run of failed attempts.
 func (c *Cache) Seed(builds []Build) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.snap = Snapshot{Builds: cloneBuilds(builds), CheckedAt: c.now(), Stale: false}
+	c.snap = Snapshot{Builds: cloneBuilds(builds), Mother: []Build{}, CheckedAt: c.now(), Stale: false}
 }
 
 // Refresh reads the source and republishes. A failure is returned to the
 // caller and marks the snapshot stale, but never empties it: GitHub being
 // unreachable is exactly when an operator most needs the list they had.
 func (c *Cache) Refresh(ctx context.Context) error {
-	builds, notModified, err := c.src.Fetch(ctx)
+	agents, mother, notModified, err := c.src.Fetch(ctx)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
-		c.snap = Snapshot{Builds: c.snap.Builds, CheckedAt: c.snap.CheckedAt, Stale: true}
+		c.snap = Snapshot{Builds: c.snap.Builds, Mother: c.snap.Mother, CheckedAt: c.snap.CheckedAt, Stale: true}
 		return err
 	}
 	if notModified {
-		c.snap = Snapshot{Builds: c.snap.Builds, CheckedAt: c.now(), Stale: false}
+		c.snap = Snapshot{Builds: c.snap.Builds, Mother: c.snap.Mother, CheckedAt: c.now(), Stale: false}
 		return nil
 	}
-	c.snap = Snapshot{Builds: cloneBuilds(builds), CheckedAt: c.now(), Stale: false}
+	c.snap = Snapshot{Builds: cloneBuilds(agents), Mother: cloneBuilds(mother), CheckedAt: c.now(), Stale: false}
 	return nil
 }
 
@@ -76,6 +87,7 @@ func (c *Cache) Snapshot() Snapshot {
 	defer c.mu.RUnlock()
 	return Snapshot{
 		Builds:    cloneBuilds(c.snap.Builds),
+		Mother:    cloneBuilds(c.snap.Mother),
 		CheckedAt: c.snap.CheckedAt,
 		Stale:     c.snap.Stale,
 	}

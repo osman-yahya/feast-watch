@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/osman-yahya/feast-watch/shared/release"
+	"github.com/osman-yahya/feast-watch/shared/selfupdate"
 )
 
 // assetPath is where a correctly built agent looks for its own replacement on
@@ -188,7 +189,7 @@ func TestSelfUpdateLeavesNoTemporaryFileBehind(t *testing.T) {
 // An oversized asset must be refused by size rather than read into memory: the
 // agent runs on the hosts it monitors, some of which are small.
 func TestSelfUpdateRefusesAnOversizedAsset(t *testing.T) {
-	huge := make([]byte, maxBinarySize+1)
+	huge := make([]byte, selfupdate.MaxBinarySize+1)
 	srv := releaseServer(t, "v1.3.0", huge, sum(huge))
 	defer srv.Close()
 

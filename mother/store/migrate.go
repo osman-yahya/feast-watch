@@ -72,6 +72,27 @@ var migrations = []struct {
 		}
 		return nil
 	}},
+
+	{"mother: its own rollout intent", func(tx *sql.Tx) error {
+		// CREATE TABLE IF NOT EXISTS in the schema already made this on a
+		// fresh database; this entry exists so an older one gets it too and
+		// the version numbering stays honest about what changed.
+		//
+		// A table rather than a settings key: GetSettings Atoi's every stored
+		// value, so a version string in the settings table would break every
+		// settings read in the mother rather than merely displaying wrong.
+		_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS mother_update (
+			  id              INTEGER PRIMARY KEY CHECK (id = 1),
+			  desired_version TEXT    NOT NULL DEFAULT '',
+			  staged_version  TEXT    NOT NULL DEFAULT '',
+			  attempts        INTEGER NOT NULL DEFAULT 0,
+			  error           TEXT    NOT NULL DEFAULT '',
+			  requested_at    INTEGER NOT NULL DEFAULT 0,
+			  applied_at      INTEGER NOT NULL DEFAULT 0
+			);`)
+		return err
+	}},
 }
 
 // migrate brings db up to the current schema version and reports how many

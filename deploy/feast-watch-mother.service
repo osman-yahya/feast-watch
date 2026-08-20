@@ -5,6 +5,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# The root half of the mother's self-update. `+` runs it outside the sandbox
+# below, as root, which is the only way a staged binary can reach
+# /usr/local/bin — this unit's own hardening makes that path read-only to the
+# service. It runs on every start and does nothing when nothing is staged.
+ExecStartPre=+/usr/local/sbin/feast-watch-mother-promote
 ExecStart=/usr/local/bin/feast-watch
 EnvironmentFile=/etc/feast-watch/mother.env
 Restart=always

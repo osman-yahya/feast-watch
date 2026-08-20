@@ -34,6 +34,11 @@ type API struct {
 	// /api/live and the fleet list; nothing about it is persisted.
 	live *live.Store
 
+	// motherUpdate is the mother's own rollout, nil until SetMotherUpdate is
+	// called. Every read goes through motherUpdateSupported/motherPlatform,
+	// which treat nil as "this deployment cannot update itself".
+	motherUpdate MotherUpdateTarget
+
 	mu       sync.Mutex
 	lastPush map[int64]time.Time // per-server rate-limit state
 }
@@ -76,6 +81,7 @@ func (a *API) Handler() http.Handler {
 	a.registerChart(mux)   // Task 12
 	a.registerInstall(mux) // Task 13
 	a.registerVersions(mux)
+	a.registerMother(mux)
 	return mux
 }
 

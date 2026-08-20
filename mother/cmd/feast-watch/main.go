@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"github.com/osman-yahya/feast-watch/mother"
 	"github.com/osman-yahya/feast-watch/mother/api"
 	"github.com/osman-yahya/feast-watch/mother/release"
+	"github.com/osman-yahya/feast-watch/mother/selfupdate"
 	"github.com/osman-yahya/feast-watch/mother/store"
 	sharedrelease "github.com/osman-yahya/feast-watch/shared/release"
+	"github.com/osman-yahya/feast-watch/shared/version"
 )
 
 // defaultReleasePoll is how often the mother re-reads the published releases.
@@ -24,6 +28,32 @@ import (
 // a conditional request answered 304, so this costs ~12 billed requests an
 // hour in the worst case and none in the common one.
 const defaultReleasePoll = 5 * time.Minute
+
+// defaultMotherUpdateInterval is how often the mother checks its own rollout
+// target. One indexed read of a single row against a database this process
+// already holds open — cheaper than the hourly retention sweep — and it bounds
+// "I pressed update" to well under a minute.
+const defaultMotherUpdateInterval = 30 * time.Second
+
+// motherUpdateMaxAttempts bounds how many times one target is tried, counted
+// across restarts. Enough to ride out a transient network failure, few enough
+// that a genuinely broken target stops within a minute or two and leaves a
+// readable reason instead of a silent download-exit-restart loop.
+const motherUpdateMaxAttempts = 3
+
+func motherUpdateInterval() time.Duration {
+	raw := os.Getenv("FW_MOTHER_UPDATE_INTERVAL")
+	if raw == "" {
+		return defaultMotherUpdateInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		slog.Warn("FW_MOTHER_UPDATE_INTERVAL is not a positive duration; using the default",
+			"value", raw, "default", defaultMotherUpdateInterval)
+		return defaultMotherUpdateInterval
+	}
+	return d
+}
 
 func releasePollInterval() time.Duration {
 	raw := os.Getenv("FW_RELEASE_POLL_INTERVAL")
@@ -71,7 +101,8 @@ func env(key, fallback string) string {
 }
 
 func main() {
-	st, err := store.Open(env("FW_DB_PATH", "/var/lib/feast-watch/mother.db"))
+	dbPath := env("FW_DB_PATH", "/var/lib/feast-watch/mother.db")
+	st, err := store.Open(dbPath)
 	if err != nil {
 		slog.Error("open store", "err", err)
 		os.Exit(1)
@@ -125,8 +156,30 @@ func main() {
 		slog.Error("refresh release index", "err", err)
 	})
 
+	// The mother's own rollout. `stop` is the same cancel the signal handler
+	// uses, so a staged update leaves through the graceful shutdown path rather
+	// than exiting from under an in-flight ingest — this process is the single
+	// writer of a SQLite database and has to close it cleanly.
+	promotePath := env("FW_MOTHER_PROMOTE_PATH", "/usr/local/sbin/feast-watch-mother-promote")
+	updater := selfupdate.New(st, selfupdate.Config{
+		ReleaseBaseURL: env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL),
+		PromotePath:    promotePath,
+		StageDir:       env("FW_MOTHER_STAGE_DIR", filepath.Join(filepath.Dir(dbPath), "update")),
+		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
+		MaxAttempts:    motherUpdateMaxAttempts,
+		Interval:       motherUpdateInterval(),
+	}, &http.Client{Timeout: 60 * time.Second}, time.Now, stop)
+
 	a := api.New(st, apiKey, releases)
 	a.SetPublicURL(publicURL)
+	a.SetMotherUpdate(updater)
+	if !updater.Supported() {
+		// Said once, at boot, because the panel will show `unsupported` with
+		// no way to tell whether that is deliberate or a missing file.
+		slog.Info("mother self-update is unavailable: no promote helper on this deployment",
+			"looked_for", promotePath)
+	}
+	go updater.Run(ctx, version.Version)
 	// The live window is stored in settings but held in memory, so it has to
 	// be applied at boot as well as on save — otherwise a restart would run
 	// the default until an operator happened to press Save.

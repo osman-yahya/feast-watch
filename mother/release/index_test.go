@@ -10,13 +10,14 @@ import (
 type fakeSource struct {
 	calls       int
 	builds      []Build
+	mother      []Build
 	notModified bool
 	err         error
 }
 
-func (f *fakeSource) Fetch(context.Context) ([]Build, bool, error) {
+func (f *fakeSource) Fetch(context.Context) ([]Build, []Build, bool, error) {
 	f.calls++
-	return f.builds, f.notModified, f.err
+	return f.builds, f.mother, f.notModified, f.err
 }
 
 func at(sec int64) func() time.Time {
@@ -129,5 +130,59 @@ func TestSeedBuildsAreOfferedBeforeAnyFetch(t *testing.T) {
 	snap := c.Snapshot()
 	if len(snap.Builds) != 1 || snap.Builds[0].Version != "v1.2.0" {
 		t.Fatalf("seed not offered: %+v", snap.Builds)
+	}
+}
+
+// Both lists are replaced together: a refresh that updated one and kept the
+// other would let the panel offer a mother version from a release list that no
+// longer describes what is published.
+func TestSnapshotCarriesBothFamilies(t *testing.T) {
+	c := NewCache(&fakeSource{
+		builds: []Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64"}}},
+		mother: []Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64", "linux-arm64"}}},
+	}, at(100))
+
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snap := c.Snapshot()
+	if len(snap.Builds) != 1 || len(snap.Mother) != 1 {
+		t.Fatalf("snapshot: %+v", snap)
+	}
+	if len(snap.Mother[0].Platforms) != 2 {
+		t.Fatalf("mother platforms: %+v", snap.Mother[0])
+	}
+}
+
+// The guarantee Builds already had, now for Mother too: handing out the
+// cache's own slices would let a handler's incidental write reach shared state.
+func TestSnapshotDoesNotShareMotherStorageWithTheCache(t *testing.T) {
+	c := NewCache(&fakeSource{
+		mother: []Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64"}}},
+	}, at(100))
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	first := c.Snapshot()
+	first.Mother[0].Platforms[0] = "tampered"
+	if c.Snapshot().Mother[0].Platforms[0] != "linux-amd64" {
+		t.Fatal("Snapshot handed out the cache's own slice")
+	}
+}
+
+// A mother that cannot reach the release host cannot download its own
+// replacement either, so seeding it a target would only produce a bounded run
+// of failed attempts.
+func TestSeedOffersNoMotherBuilds(t *testing.T) {
+	c := NewCache(&fakeSource{}, at(100))
+	c.Seed([]Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64"}}})
+
+	snap := c.Snapshot()
+	if len(snap.Builds) != 1 {
+		t.Fatalf("the seeded agent builds must be offered: %+v", snap)
+	}
+	if len(snap.Mother) != 0 {
+		t.Fatalf("a seed must not offer the mother a target it cannot fetch: %+v", snap.Mother)
 	}
 }
