@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/osman-yahya/feast-watch/mother/live"
+	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
@@ -18,10 +19,10 @@ import (
 type API struct {
 	st     *store.Store
 	apiKey string
-	// releases is the mother's view of what agent builds exist. The mother
-	// stores no binaries and serves none: agents download from the public
-	// GitHub release, and this is only the index a rollout target is checked
-	// against.
+	// releases is the mother's view of what builds exist. It is the index a
+	// rollout target is checked against, and nothing more — where the mother
+	// also mirrors the binaries themselves, that is `binaries` below and is a
+	// separate decision (see mother/mirror).
 	releases *release.Cache
 	// publicURL is the base URL agents reach the mother on, scheme included,
 	// e.g. "http://10.0.0.1:8443". It is a whole URL rather than a host:port
@@ -33,6 +34,10 @@ type API struct {
 	// rollup tiers deliberately do not keep. It is fed by ingest and read by
 	// /api/live and the fleet list; nothing about it is persisted.
 	live *live.Store
+
+	// binaries is the mirror agents download their builds from, nil where they
+	// fetch from the release host themselves.
+	binaries *mirror.Cache
 
 	// motherUpdate is the mother's own rollout, nil until SetMotherUpdate is
 	// called. Every read goes through motherUpdateSupported/motherPlatform,
@@ -82,6 +87,7 @@ func (a *API) Handler() http.Handler {
 	a.registerInstall(mux) // Task 13
 	a.registerVersions(mux)
 	a.registerMother(mux)
+	a.registerBinaries(mux)
 	return mux
 }
 

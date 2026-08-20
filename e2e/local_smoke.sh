@@ -145,6 +145,10 @@ check_plain_http() {
   # asserting is ABSENT from the served installer, not a variable to expand.
   case "$script" in
     *'$MOTHER_URL/download'*) fail "installer still downloads binaries from the mother" ;;
+    # The default, and the better arrangement wherever agents can reach the
+    # release host: binary distribution stays off the monitoring path. A mother
+    # started with FW_MIRROR_BINARIES=true names itself here instead, which is
+    # covered by mother/api's install-script tests.
     *"RELEASE_BASE_URL=https://github.com/"*) pass "installer downloads from GitHub Releases" ;;
     *) fail "installer does not name a release host" ;;
   esac

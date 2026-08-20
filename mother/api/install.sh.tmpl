@@ -31,8 +31,10 @@ agent_arch() {
 # chmod 0755, and the service respawns against it every 5 seconds. set -euo
 # pipefail does not catch that — curl succeeded.
 #
-# The binary comes from the release host, not from the mother: the mother
-# stores no builds, so a rollout can never be blocked by a file nobody staged.
+# The binary comes from whatever RELEASE_BASE_URL names above: the public
+# release host by default, or the mother itself where it is mirroring for a
+# fleet whose agents have no route to the internet. This script cannot tell the
+# two apart, because both serve the same URL shape and the same checksum.
 download_agent() {
   local arch="$1" dest="$2"
   # This installer is bash + systemd, so the target is always Linux. The GOOS

@@ -16,6 +16,7 @@ import (
 
 	"github.com/osman-yahya/feast-watch/mother"
 	"github.com/osman-yahya/feast-watch/mother/api"
+	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/selfupdate"
 	"github.com/osman-yahya/feast-watch/mother/store"
@@ -172,6 +173,24 @@ func main() {
 
 	a := api.New(st, apiKey, releases)
 	a.SetPublicURL(publicURL)
+
+	// Binary mirroring, off unless asked for.
+	//
+	// Agents fetching straight from GitHub Releases is the better arrangement
+	// wherever it works: binary distribution stays off the monitoring path, the
+	// mother stores no builds and serves no bytes, and a rollout cannot be
+	// blocked by the mother's disk. Turning that on its head is a decision
+	// somebody should have made on purpose — on a fleet whose agents have no
+	// route to the internet, a rollout they cannot fetch is not a rollout — so
+	// it is a switch rather than a default.
+	if os.Getenv("FW_MIRROR_BINARIES") == "true" {
+		cacheDir := env("FW_BINARY_CACHE_DIR", filepath.Join(filepath.Dir(dbPath), "binaries"))
+		a.SetBinaryMirror(mirror.New(cacheDir,
+			env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL),
+			&http.Client{Timeout: 60 * time.Second}))
+		slog.Info("mirroring release binaries for agents", "cache", cacheDir,
+			"agents_download_from", publicURL)
+	}
 	a.SetMotherUpdate(updater)
 	if !updater.Supported() {
 		// Said once, at boot, because the panel will show `unsupported` with

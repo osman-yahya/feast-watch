@@ -29,7 +29,7 @@ var installTmpl = template.Must(
 
 // registerInstall exposes the per-token install script. There is deliberately
 // no binary download route: agents fetch builds from the public GitHub
-// release, so the mother stores no binaries, serves no bytes, and a rollout
+// release host named in it, so a rollout
 // cannot be blocked by a file nobody staged on it.
 func (a *API) registerInstall(mux *http.ServeMux) {
 	mux.HandleFunc("GET /install/{token}", a.handleInstallScript)
@@ -60,7 +60,7 @@ func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 		"MotherURL":      a.publicURL,
 		"Token":          srv.Token,
 		"ServerName":     srv.Name,
-		"ReleaseBaseURL": release.DefaultBaseURL,
+		"ReleaseBaseURL": a.releaseBaseURLForAgents(),
 	}); err != nil {
 		slog.Error("render install script", "err", err)
 		http.Error(w, "install script unavailable", http.StatusInternalServerError)
@@ -68,4 +68,22 @@ func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript")
 	w.Write(buf.Bytes())
+}
+
+// releaseBaseURLForAgents is where a freshly installed agent will fetch its
+// binaries from.
+//
+// The mother, when it is mirroring. Agents on this fleet have no route to the
+// internet, so naming the public release host would hand every new host an
+// address it cannot reach — and the failure would arrive later, as an update
+// that never lands, rather than at install time where someone is watching.
+//
+// The public release host otherwise, which is the arrangement the agents
+// started with and the better one wherever it is available: binary
+// distribution stays off the monitoring path entirely.
+func (a *API) releaseBaseURLForAgents() string {
+	if a.binaries == nil {
+		return release.DefaultBaseURL
+	}
+	return a.publicURL
 }

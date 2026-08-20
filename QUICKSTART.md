@@ -70,8 +70,8 @@ published releases, and the settings payload rules:
    release that already has assets; re-run it from `workflow_dispatch` when a
    re-upload is genuinely what you want.
 
-   The mother stores no binaries and serves none. It reads the published
-   releases from the GitHub API — a conditional request every five minutes,
+   By default the mother stores no binaries and serves none. It reads the
+   published releases from the GitHub API — a conditional request every five minutes,
    which is not counted against the unauthenticated rate limit when nothing
    changed — and offers only versions carrying both a binary and its checksum
    for the target host's platform.
@@ -79,6 +79,48 @@ published releases, and the settings payload rules:
    `bin/release.sh` still builds every platform locally, named exactly as the
    release assets, for development or for uploading by hand if CI is
    unavailable.
+
+### Agents that cannot reach the internet
+
+Agents download their own binaries from GitHub Releases, which keeps binary
+distribution off the monitoring path entirely: the mother stores no builds,
+serves no bytes, and a rollout cannot be blocked by the mother's disk. That is
+the better arrangement wherever it works.
+
+Where it does not — a fleet whose agents have no route to the internet — the
+mother can stand in the middle:
+
+```bash
+# /etc/feast-watch/mother.env
+FW_MIRROR_BINARIES=true
+```
+
+The mother then serves GitHub's own URL shape (`/releases/download/<tag>/<asset>`
+and `/releases/latest/download/<asset>`), fetching each build the first time it
+is asked for, verifying it against the checksum GitHub published, and keeping it
+under `/var/lib/feast-watch/binaries/`. Agents need no new code and no new
+protocol: `RELEASE_BASE_URL` was always their way of being told where to
+download from, and the installer now writes the mother's address into it.
+
+What this changes, stated plainly:
+
+- Binary distribution is now on the monitoring path. The mother's disk and its
+  uptime decide whether a rollout can land.
+- Each build is about 12MB per platform. Nothing is evicted automatically; the
+  cache lives under `StateDirectory`, so `mother-uninstall.sh --purge` removes it.
+- The mother still needs to reach `github.com` itself. If nothing can, a build
+  has to be carried in by hand — mirroring solves the agents' isolation, not the
+  mother's.
+- The chain is unbroken, not merely shortened: CI computes the checksum, the
+  mother refuses anything that does not match it, and the agent verifies again
+  before replacing itself. The mother adds a hop, never an authority — it builds
+  nothing and signs nothing.
+
+**Existing agents keep their old setting.** The installer writes
+`RELEASE_BASE_URL` at install time, so hosts installed before this was turned on
+still name GitHub. Point them at the mother by editing that line in
+`/etc/feast-watch/agent.conf` and restarting `feast-watch-agent`, or by re-running
+the served installer.
 
 ### Upgrading the mother
 

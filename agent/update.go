@@ -30,10 +30,17 @@ func SelfUpdateWithClient(cfg Config, desiredVersion string, exit func(int), cli
 
 // selfUpdate fetches the build for this platform from the release host.
 //
-// The binary comes from GitHub Releases, never from the mother. The mother
-// names a version and nothing more, which keeps binary distribution off the
-// monitoring path entirely: the mother stores no builds, serves no bytes, and
-// a rollout cannot be blocked by a file somebody forgot to stage on it.
+// The binary comes from whatever RELEASE_BASE_URL names — GitHub Releases by
+// default, and the mother where it is mirroring for a fleet with no route to
+// the internet. The agent cannot tell the two apart and has no reason to: both
+// serve the same URL shape and the same published checksum, and it verifies
+// before replacing itself either way.
+//
+// Fetching straight from the release host is still the better arrangement
+// wherever it works, because it keeps binary distribution off the monitoring
+// path entirely: the mother then stores no builds, serves no bytes, and a
+// rollout cannot be blocked by the mother's disk. Mirroring is what a fleet
+// whose agents are offline by policy trades that for (mother/mirror).
 //
 // The transfer itself lives in shared/selfupdate, which the mother uses too.
 // What stays here is the half that is the agent's alone: it runs as root and
