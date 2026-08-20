@@ -10,10 +10,21 @@ import (
 	sharedrelease "github.com/osman-yahya/feast-watch/shared/release"
 )
 
-// SetBinaryMirror gives the mother a cache to serve release assets from. Unset,
-// the download routes answer 404 — which is what a mother whose agents reach
-// GitHub themselves should say, rather than pretending to hold builds.
-func (a *API) SetBinaryMirror(m *mirror.Cache) { a.binaries = m }
+// BinarySource is where the mother gets the bytes an agent downloads.
+//
+// Two things satisfy it and the difference is where the binary came from, not
+// how it is served: mother/mirror fetches a published release and keeps it,
+// mother/build compiles it here. The routes below cannot tell them apart, and
+// neither can the agent.
+type BinarySource interface {
+	Ensure(version, asset string) (string, error)
+}
+
+// SetBinarySource gives the mother something to serve builds from. Unset, the
+// download routes answer 404 — which is what a mother whose agents fetch from
+// the release host themselves should say, rather than pretending to hold
+// builds.
+func (a *API) SetBinarySource(s BinarySource) { a.binaries = s }
 
 // The routes deliberately mirror GitHub's own URL shape:
 //

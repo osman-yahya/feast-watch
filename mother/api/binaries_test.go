@@ -47,7 +47,7 @@ func mirrorAPI(t *testing.T, body []byte) (*API, *httptest.Server) {
 		[]release.Build{build("v1.0.2", "linux-amd64")},
 		[]release.Build{build("v1.0.2", "linux-amd64")},
 	))
-	a.SetBinaryMirror(mirror.New(filepath.Join(t.TempDir(), "binaries"), upstream.URL, upstream.Client()))
+	a.SetBinarySource(mirror.New(filepath.Join(t.TempDir(), "binaries"), upstream.URL, upstream.Client()))
 	return a, upstream
 }
 

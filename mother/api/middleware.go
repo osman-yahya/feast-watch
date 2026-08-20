@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/osman-yahya/feast-watch/mother/live"
-	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
@@ -35,9 +34,10 @@ type API struct {
 	// /api/live and the fleet list; nothing about it is persisted.
 	live *live.Store
 
-	// binaries is the mirror agents download their builds from, nil where they
+	// binaries is where agents download their builds from — a mirror of a
+	// published release, or this mother's own build catalogue. Nil where agents
 	// fetch from the release host themselves.
-	binaries *mirror.Cache
+	binaries BinarySource
 
 	// motherUpdate is the mother's own rollout, nil until SetMotherUpdate is
 	// called. Every read goes through motherUpdateSupported/motherPlatform,

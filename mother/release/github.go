@@ -148,14 +148,16 @@ func buildsFrom(releases []apiRelease, includePrereleases bool) (agents, mother 
 			mother = append(mother, Build{Version: r.TagName, Platforms: motherPlats})
 		}
 	}
-	sortDescending(agents)
-	sortDescending(mother)
+	SortDescending(agents)
+	SortDescending(mother)
 	return agents, mother
 }
 
-// sortDescending puts the newest version first, which is the order a rollout
-// dropdown reads in.
-func sortDescending(builds []Build) {
+// SortDescending puts the newest version first, which is the order a rollout
+// dropdown reads in. Exported because the local build catalogue orders its own
+// list the same way, and a second comparator is how two lists begin disagreeing
+// about which build is newest.
+func SortDescending(builds []Build) {
 	sort.Slice(builds, func(i, j int) bool {
 		return naturalLess(builds[j].Version, builds[i].Version)
 	})

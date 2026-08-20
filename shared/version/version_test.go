@@ -34,8 +34,13 @@ var buildDefinitions = []struct {
 	{"Dockerfile.agent", "every containerised agent, including the k8s DaemonSet"},
 	{"Dockerfile.mother", "the mother's own reported version (GET /api/version)"},
 	{"bin/release.sh", "locally built binaries, which is what deploy/mother-install.sh installs"},
-	{".github/workflows/release.yml", "the published GitHub release every agent self-updates from"},
+	{"mother/build/build.go", "every binary this mother compiles and serves to its own fleet"},
 }
+
+// .github/workflows/release.yml was the fourth, and is gone: this project no
+// longer publishes GitHub releases, because it no longer depends on GitHub for
+// anything. mother/build/build.go took over the job it did — and inherits the
+// same obligation, which is why it is listed above rather than trusted.
 
 // repoFile reads a file relative to the repository root.
 func repoFile(t *testing.T, path string) string {

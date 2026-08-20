@@ -16,6 +16,7 @@ import (
 
 	"github.com/osman-yahya/feast-watch/mother"
 	"github.com/osman-yahya/feast-watch/mother/api"
+	"github.com/osman-yahya/feast-watch/mother/build"
 	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/selfupdate"
@@ -124,6 +125,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Where this mother's own builds live, when it makes its own. Read before
+	// the CLI dispatch because `feast-watch build` writes here and the server
+	// reads here, and they must agree without either being told twice.
+	sourceDir := os.Getenv("FW_SOURCE_DIR")
+	buildDir := env("FW_BUILD_DIR", filepath.Join(filepath.Dir(dbPath), "builds"))
+
+	// `feast-watch build vX.Y.Z` — compile every platform from FW_SOURCE_DIR
+	// into the catalogue this mother serves. The one command that needs a Go
+	// toolchain on this host, and the price of answering to nothing outside it.
+	if len(os.Args) > 1 && os.Args[1] == "build" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: feast-watch build <version>   (source from FW_SOURCE_DIR)")
+			os.Exit(2)
+		}
+		if sourceDir == "" {
+			fmt.Fprintln(os.Stderr, "FW_SOURCE_DIR is required: it names the source tree to build from")
+			os.Exit(1)
+		}
+		version := os.Args[2]
+		fmt.Printf("building %s from %s\n", version, sourceDir)
+		if err := build.Build(sourceDir, buildDir, version); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("built %s into %s\n", version, filepath.Join(buildDir, version))
+		return
+	}
+
 	// `feast-watch generate --name=X` — CLI alternative to the panel's Add Server.
 	if len(os.Args) > 1 && os.Args[1] == "generate" {
 		out, err := mother.RunGenerate(st, publicURL, os.Args[2:])
@@ -142,10 +171,26 @@ func main() {
 	}
 	// The release index is the mother's whole involvement in binary
 	// distribution: it names versions, agents download them from GitHub.
-	releases := release.NewCache(
-		release.NewClient(env("FW_RELEASE_API_URL", sharedrelease.DefaultAPIBaseURL),
-			os.Getenv("FW_INCLUDE_PRERELEASES") == "true"),
-		time.Now)
+	// What versions exist, and who says so.
+	//
+	// With FW_SOURCE_DIR this mother is the whole answer: it compiles from that
+	// tree and reads its own catalogue, and nothing here talks to GitHub — not
+	// for the bytes, not for the tag that names them. The cost is that the
+	// mother is then the only authority for what a version means; there is no
+	// published artifact left to check a build against.
+	//
+	// Without it, the index is the published releases, which is the arrangement
+	// everything else in this repository was built around.
+	var source release.Source
+	var binaries api.BinarySource
+	if sourceDir != "" {
+		local := build.New(buildDir)
+		source, binaries = local, local
+	} else {
+		source = release.NewClient(env("FW_RELEASE_API_URL", sharedrelease.DefaultAPIBaseURL),
+			os.Getenv("FW_INCLUDE_PRERELEASES") == "true")
+	}
+	releases := release.NewCache(source, time.Now)
 	if seed := os.Getenv("FW_AGENT_VERSIONS"); seed != "" {
 		// An offline seed for a mother with no route to api.github.com. A
 		// successful fetch replaces it.
@@ -183,13 +228,20 @@ func main() {
 	// somebody should have made on purpose — on a fleet whose agents have no
 	// route to the internet, a rollout they cannot fetch is not a rollout — so
 	// it is a switch rather than a default.
-	if os.Getenv("FW_MIRROR_BINARIES") == "true" {
+	if binaries == nil && os.Getenv("FW_MIRROR_BINARIES") == "true" {
 		cacheDir := env("FW_BINARY_CACHE_DIR", filepath.Join(filepath.Dir(dbPath), "binaries"))
-		a.SetBinaryMirror(mirror.New(cacheDir,
+		binaries = mirror.New(cacheDir,
 			env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL),
-			&http.Client{Timeout: 60 * time.Second}))
+			&http.Client{Timeout: 60 * time.Second})
 		slog.Info("mirroring release binaries for agents", "cache", cacheDir,
 			"agents_download_from", publicURL)
+	}
+	if binaries != nil {
+		a.SetBinarySource(binaries)
+		if sourceDir != "" {
+			slog.Info("serving this mother's own builds", "catalogue", buildDir,
+				"source", sourceDir, "agents_download_from", publicURL)
+		}
 	}
 	a.SetMotherUpdate(updater)
 	if !updater.Supported() {

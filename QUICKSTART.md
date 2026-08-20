@@ -38,47 +38,48 @@ published releases, and the settings payload rules:
 
 ## Production
 
-1. Publish a release:
+1. Cut a version:
 
    ```bash
-   git tag v1.3.0
-   git push origin v1.3.0     # the push is what publishes; the tag alone does nothing
+   sudo -u feast-watch \
+     FW_DB_PATH=/var/lib/feast-watch/mother.db \
+     FW_SOURCE_DIR=/opt/feast-watch-src \
+     feast-watch build v1.3.0
    ```
 
-   `.github/workflows/release.yml` then verifies the version links in, **creates
-   the GitHub release for the tag**, builds every platform with the tag compiled
-   in, uploads each binary plus its `.sha256`, and finally asserts the release
-   carries every asset `shared/release.Platforms` says it should. The tag *is*
-   the version: it is what gets compiled in and what agents ask for, with no
-   mapping in between.
+   The mother compiles every platform from that source tree — four agent builds
+   and two of itself — writes a SHA-256 beside each, and publishes them into its
+   catalogue at `/var/lib/feast-watch/builds/v1.3.0/`. It is the one command
+   that needs a Go toolchain on this host, and the price of answering to nothing
+   outside it.
 
-   Two failure modes this used to have, both of which produced a version that
-   simply never appeared in the panel:
+   The tag *is* the version: it is what gets compiled in and what agents ask
+   for, with no mapping in between. **A version is built once.** Rebuilding one
+   that already exists is refused, because agents compare versions as strings
+   and a fleet cannot tell two builds of `v1.3.0` apart.
 
-   - A tag that was created but never pushed. The workflow fires on
-     `push: tags`, so a local-only tag publishes nothing at all. `bin/release.sh`
-     now says so when the version it built names a tag that is not on origin.
-   - A tag pushed with no release object behind it. The workflow only ever ran
-     `gh release upload`, which fails with `release not found` against a tag
-     that has no release — so the only release that ever worked was one created
-     by hand. The workflow creates it now.
+   The build lands whole or not at all: it compiles into a staging directory and
+   renames at the end, so a version never appears in the catalogue holding four
+   of its six platforms.
 
-   Do not move a tag that has already been published. The upload step replaces
-   assets in place, so a moved tag makes one version string mean two different
-   binaries, and agents compare versions as strings — a fleet cannot tell those
-   apart and will never reconcile. The workflow refuses a tag push onto a
-   release that already has assets; re-run it from `workflow_dispatch` when a
-   re-upload is genuinely what you want.
+   Set `FW_SOURCE_DIR` in `/etc/feast-watch/mother.env` and the mother reads
+   that catalogue as its release index — which versions exist, which platforms
+   each covers — and serves the binaries themselves at GitHub's own URL shape.
+   Nothing in the loop reaches the internet: not the bytes, not the tag that
+   names them.
 
-   By default the mother stores no binaries and serves none. It reads the
-   published releases from the GitHub API — a conditional request every five minutes,
-   which is not counted against the unauthenticated rate limit when nothing
-   changed — and offers only versions carrying both a binary and its checksum
-   for the target host's platform.
+   **This replaces GitHub Releases**, and with it the CI that used to publish
+   them. What CI checked now runs from `bin/check.sh`, which anyone can run and
+   which needs nothing to be reachable:
 
-   `bin/release.sh` still builds every platform locally, named exactly as the
-   release assets, for development or for uploading by hand if CI is
-   unavailable.
+   ```bash
+   bin/check.sh            # vet, gofmt, race tests, shellcheck, every e2e suite
+   bin/check.sh go         # just the Go suite
+   ```
+
+   Without `FW_SOURCE_DIR` the mother still reads published GitHub releases
+   instead, which is the arrangement the rest of this document was written
+   around and remains supported.
 
 ### Agents that cannot reach the internet
 
