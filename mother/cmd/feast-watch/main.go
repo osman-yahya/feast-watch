@@ -208,7 +208,7 @@ func main() {
 	// writer of a SQLite database and has to close it cleanly.
 	promotePath := env("FW_MOTHER_PROMOTE_PATH", "/usr/local/sbin/feast-watch-mother-promote")
 	updater := selfupdate.New(st, selfupdate.Config{
-		ReleaseBaseURL: env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL),
+		ReleaseBaseURL: motherReleaseBaseURL(sourceDir, publicURL),
 		PromotePath:    promotePath,
 		StageDir:       env("FW_MOTHER_STAGE_DIR", filepath.Join(filepath.Dir(dbPath), "update")),
 		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
@@ -300,4 +300,22 @@ func main() {
 	}
 	slog.Error("server stopped", "err", err)
 	os.Exit(1)
+}
+
+// motherReleaseBaseURL is where the mother fetches its OWN replacement from.
+//
+// From itself, when it compiles its own builds. The catalogue is then the only
+// place a mother binary of that version exists — nothing was ever published
+// anywhere else — so pointing at the release host would offer the panel a
+// target that can only ever 404. It goes over its own HTTP surface rather than
+// straight to the file so the update travels the exact path the fleet's does:
+// if serving is broken, the mother finds that out about its own update instead
+// of being the one client that never noticed.
+//
+// From the release host otherwise, which is where its builds actually are.
+func motherReleaseBaseURL(sourceDir, publicURL string) string {
+	if sourceDir != "" {
+		return publicURL
+	}
+	return env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL)
 }
