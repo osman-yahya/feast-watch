@@ -41,13 +41,34 @@ published releases, and the settings payload rules:
 1. Publish a release:
 
    ```bash
-   git tag v1.3.0 && git push origin v1.3.0
+   git tag v1.3.0
+   git push origin v1.3.0     # the push is what publishes; the tag alone does nothing
    ```
 
-   `.github/workflows/release.yml` builds every platform with the tag compiled
-   in and uploads each binary plus its `.sha256` to the GitHub release. The tag
-   *is* the version: it is what gets compiled in and what agents ask for, with
-   no mapping in between.
+   `.github/workflows/release.yml` then verifies the version links in, **creates
+   the GitHub release for the tag**, builds every platform with the tag compiled
+   in, uploads each binary plus its `.sha256`, and finally asserts the release
+   carries every asset `shared/release.Platforms` says it should. The tag *is*
+   the version: it is what gets compiled in and what agents ask for, with no
+   mapping in between.
+
+   Two failure modes this used to have, both of which produced a version that
+   simply never appeared in the panel:
+
+   - A tag that was created but never pushed. The workflow fires on
+     `push: tags`, so a local-only tag publishes nothing at all. `bin/release.sh`
+     now says so when the version it built names a tag that is not on origin.
+   - A tag pushed with no release object behind it. The workflow only ever ran
+     `gh release upload`, which fails with `release not found` against a tag
+     that has no release — so the only release that ever worked was one created
+     by hand. The workflow creates it now.
+
+   Do not move a tag that has already been published. The upload step replaces
+   assets in place, so a moved tag makes one version string mean two different
+   binaries, and agents compare versions as strings — a fleet cannot tell those
+   apart and will never reconcile. The workflow refuses a tag push onto a
+   release that already has assets; re-run it from `workflow_dispatch` when a
+   re-upload is genuinely what you want.
 
    The mother stores no binaries and serves none. It reads the published
    releases from the GitHub API — a conditional request every five minutes,
@@ -58,6 +79,69 @@ published releases, and the settings payload rules:
    `bin/release.sh` still builds every platform locally, named exactly as the
    release assets, for development or for uploading by hand if CI is
    unavailable.
+
+### Upgrading the mother
+
+From the panel: open the Mother card on the monitoring page, pick a published
+version, confirm. The mother downloads that build from GitHub Releases, verifies
+its SHA-256, stages it in `/var/lib/feast-watch/update/`, and shuts down. systemd
+restarts it, `ExecStartPre=+/usr/local/sbin/feast-watch-mother-promote` installs
+the staged binary as root, and the new one starts. The panel is unreachable for a
+few seconds in the middle; while a target is pending it shows that rather than an
+error.
+
+The mother cannot install its own binary and is not meant to: its unit runs it as
+an unprivileged user under `ProtectSystem=strict`, so `/usr/local/bin` is
+read-only inside its mount namespace. It verifies and stages; root promotes.
+
+A target is tried at most three times, counted across restarts. After that the
+mother drops the target and leaves the reason on the card — it does not keep
+downloading and exiting.
+
+**Where this does not work.** In Docker there is no systemd and no promote
+helper, so the image does not ship one: the mother reports `unsupported` and
+refuses a target instead of restarting into the same version. Upgrade a
+containerised mother by building a new image.
+
+**By hand**, if the panel is not available:
+
+```bash
+sudo deploy/mother-install.sh --download            # newest published build
+sudo deploy/mother-install.sh --download=v1.4.0     # a specific one
+```
+
+`--download` fetches the published mother binary for this host's architecture,
+verifies its SHA-256, and installs it — the same rule the agent installer and
+the mother's own self-update apply. Nothing else has to be on the host: no Go
+toolchain, no checkout, no build. `--with-agent` takes its agent binary from the
+same release.
+
+The mother is a statically linked pure-Go binary: it links no libc, embeds its
+SQLite (`modernc.org/sqlite`, no cgo), shells out to nothing, and compiles
+nothing at runtime. A host that can run it needs no compiler afterwards, which
+is also why the container image is a bare `alpine` plus the binary.
+
+Building on the host instead — for an unreleased fix or a private fork — still
+works and is the one case that needs Go:
+
+```bash
+bin/release.sh --mother-only
+sudo deploy/mother-install.sh bin/build/feast-watch
+```
+
+The installer restarts an already-running unit, so the new binary is what ends up
+running. It used to only `systemctl start`, which is a no-op on an active unit —
+the upgrade appeared to succeed while the old process kept executing from the
+unlinked inode, and the panel kept reporting the old version.
+
+**Rolling back a mother that will not start.** The promote helper keeps the
+previous binary:
+
+```bash
+sudo systemctl stop feast-watch-mother
+sudo mv /usr/local/bin/feast-watch.bak /usr/local/bin/feast-watch
+sudo systemctl start feast-watch-mother
+```
 
 2. Run the mother with environment variables from [`.env.example`](.env.example)
    (copy it to `.env`, fill in real values, and load it into the environment).
@@ -384,10 +468,19 @@ be left alone.
 The mother can also be installed as a service rather than run by hand:
 
 ```bash
-bin/release.sh v1.3.0
-sudo deploy/mother-install.sh bin/build/feast-watch
+sudo deploy/mother-install.sh --download
 # edit /etc/feast-watch/mother.env, then:
 sudo systemctl start feast-watch-mother
+```
+
+That needs nothing on the host but `curl` and systemd: the published binary is
+downloaded and its SHA-256 verified before it is installed. To install a binary
+you built yourself — an unreleased fix, a private fork — pass its path instead,
+which is the one path that needs Go on the host:
+
+```bash
+bin/release.sh v1.3.0
+sudo deploy/mother-install.sh bin/build/feast-watch
 ```
 
 ## Mother and agent on the same host
@@ -396,14 +489,24 @@ This is the deployment the architecture assumes — the mother monitors its own
 host — and it is one command:
 
 ```bash
+sudo deploy/mother-install.sh --with-agent --download
+```
+
+It installs and starts the mother, registers this host under its own hostname,
+and installs the agent — both binaries from the same published release, each
+verified against its checksum.
+
+From a checkout it works without any release existing at all, which is what
+makes it the way to bring up a brand-new deployment:
+
+```bash
 bin/release.sh v1.3.0
 sudo deploy/mother-install.sh --with-agent bin/build/feast-watch
 ```
 
-It installs and starts the mother, registers this host under its own hostname,
-and installs the agent from the binary just built beside the mother. Nothing is
-downloaded, so this works before any release has been published — unlike the
-served one-liner, which fetches the agent from a GitHub release.
+Here the agent comes from the binary just built beside the mother, so nothing is
+fetched — unlike the served one-liner, which can only download from a published
+release.
 
 The two share `/etc/feast-watch` but nothing else: separate binaries, separate
 units, separate config files. Each uninstaller removes only its own files and
