@@ -172,7 +172,7 @@ start_agent() {
   AGENT_PID=$!
 
   for _ in $(seq 1 40); do
-    if api /api/servers | grep -q '"status":"online"'; then
+    if grep -q '"status":"online"' <<<"$(api /api/servers)"; then
       pass "agent online"
       return 0
     fi
@@ -255,7 +255,7 @@ check_groups() {
   [ "$members" = "1" ] || fail "group filter returned $members servers, want 1"
   pass "group filter narrows the fleet list"
 
-  api /api/servers | grep -q '"groups":\[{' || fail "server rows do not carry their groups"
+  grep -q '"groups":\[{' <<<"$(api /api/servers)" || fail "server rows do not carry their groups"
   pass "server rows carry their groups"
 
   # Clearing must reach every member regardless of platform.
@@ -283,7 +283,7 @@ check_rollout_validation() {
   esac
 
   # The index itself must have been reachable, whatever it contains.
-  api /api/version | grep -q '"checked_at"' || fail "version endpoint reports no check time"
+  grep -q '"checked_at"' <<<"$(api /api/version)" || fail "version endpoint reports no check time"
   pass "release index reports its freshness"
 }
 
@@ -401,7 +401,7 @@ check_two_phase_delete() {
   # a host cannot uninstall itself.
   local reported=0
   for _ in $(seq 1 20); do
-    if api /api/servers | grep -q '"uninstall_error":"[^"]'; then
+    if grep -q '"uninstall_error":"[^"]' <<<"$(api /api/servers)"; then
       reported=1
       break
     fi
@@ -413,7 +413,7 @@ check_two_phase_delete() {
   # And the way out for a host that will never report: force.
   code=$(status_of DELETE "/api/servers/1?force=true")
   [ "$code" = "200" ] || fail "force delete returned $code"
-  api /api/servers | grep -q '"id":1' && fail "the row survived a forced delete"
+  grep -q '"id":1' <<<"$(api /api/servers)" && fail "the row survived a forced delete"
   pass "force delete drops the row immediately"
 }
 

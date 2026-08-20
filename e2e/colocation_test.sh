@@ -103,10 +103,18 @@ step "5. both installers declare the same footprint"
 # shellcheck disable=SC2016  # $AGENT_MANIFEST is matched literally, as it
 # appears inside the installer being read — expanding it here matches nothing.
 manifest_of() { sed -n '/install-manifest <<EOF/,/^EOF$/p;/# What this installer created/,/^  } > "\$AGENT_MANIFEST"/p' "$1"; }
+# Captured once each, and matched without a pipe. `... | grep -q` looks
+# harmless but grep exits the moment it matches, and the sed upstream then dies
+# on a broken pipe — which under `set -o pipefail` fails the whole test. Whether
+# sed finishes writing first is a race, so this passed on a laptop for weeks and
+# then failed on CI on one branch while passing on the other, same commit.
+served_manifest=$(manifest_of mother/api/install.sh.tmpl)
+local_manifest=$(manifest_of deploy/mother-install.sh)
+
 for key in bin conf unit uninstaller; do
-  manifest_of mother/api/install.sh.tmpl | grep -q "^$key=" ||
+  grep -q "^$key=" <<<"$served_manifest" ||
     fail "the served installer's manifest has no '$key'"
-  manifest_of deploy/mother-install.sh | grep -q "\"$key=" ||
+  grep -q "\"$key=" <<<"$local_manifest" ||
     fail "mother-install.sh --with-agent does not record '$key' — a file it creates or forgets that the uninstaller will not clean"
 done
 pass "manifests agree on bin, conf, unit, uninstaller"
