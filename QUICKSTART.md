@@ -43,11 +43,10 @@ published releases, and the settings payload rules:
    ```bash
    sudo -u feast-watch \
      FW_DB_PATH=/var/lib/feast-watch/mother.db \
-     FW_SOURCE_DIR=/opt/feast-watch-src \
      feast-watch build v1.3.0
    ```
 
-   The mother compiles every platform from that source tree — four agent builds
+   The mother fetches that tag's source archive, compiles every platform — four agent builds
    and two of itself — writes a SHA-256 beside each, and publishes them into its
    catalogue at `/var/lib/feast-watch/builds/v1.3.0/`. It is the one command
    that needs a Go toolchain on this host, and the price of answering to nothing
@@ -62,7 +61,12 @@ published releases, and the settings payload rules:
    renames at the end, so a version never appears in the catalogue holding four
    of its six platforms.
 
-   Set `FW_SOURCE_DIR` in `/etc/feast-watch/mother.env` and the mother reads
+   Fetching the source is the last thing this project asks of GitHub, and it
+   asks for **source rather than binaries**: what the fleet runs is compiled on
+   this host. Point `FW_SOURCE_DIR` at a checkout instead and even that goes
+   away — useful for a private fork, or a host that can reach nothing.
+
+   Set `FW_SELF_BUILD=true` in `/etc/feast-watch/mother.env` and the mother reads
    that catalogue as its release index — which versions exist, which platforms
    each covers — and serves the binaries themselves at GitHub's own URL shape.
    Nothing in the loop reaches the internet: not the bytes, not the tag that
@@ -77,7 +81,7 @@ published releases, and the settings payload rules:
    bin/check.sh go         # just the Go suite
    ```
 
-   Without `FW_SOURCE_DIR` the mother still reads published GitHub releases
+   Without `FW_SELF_BUILD` the mother still reads published GitHub releases
    instead, which is the arrangement the rest of this document was written
    around and remains supported.
 

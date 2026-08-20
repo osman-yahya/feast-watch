@@ -128,7 +128,13 @@ func main() {
 	// Where this mother's own builds live, when it makes its own. Read before
 	// the CLI dispatch because `feast-watch build` writes here and the server
 	// reads here, and they must agree without either being told twice.
+	// selfBuild is the whole architecture in one flag: this mother compiles the
+	// fleet's binaries and serves them, so nothing has to be built anywhere
+	// else and no artifact has to be published for it to fetch. GitHub is left
+	// holding the source, and nothing more.
+	selfBuild := os.Getenv("FW_SELF_BUILD") == "true"
 	sourceDir := os.Getenv("FW_SOURCE_DIR")
+	sourceURL := env("FW_SOURCE_URL", sharedrelease.DefaultBaseURL)
 	buildDir := env("FW_BUILD_DIR", filepath.Join(filepath.Dir(dbPath), "builds"))
 
 	// `feast-watch build vX.Y.Z` — compile every platform from FW_SOURCE_DIR
@@ -139,13 +145,33 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: feast-watch build <version>   (source from FW_SOURCE_DIR)")
 			os.Exit(2)
 		}
-		if sourceDir == "" {
-			fmt.Fprintln(os.Stderr, "FW_SOURCE_DIR is required: it names the source tree to build from")
-			os.Exit(1)
-		}
 		version := os.Args[2]
-		fmt.Printf("building %s from %s\n", version, sourceDir)
-		if err := build.Build(sourceDir, buildDir, version); err != nil {
+
+		// Where the source comes from. A directory when one is named — an
+		// operator's checkout, or a tree carried onto a host that can reach
+		// nothing — and otherwise the tag's own source archive, fetched here.
+		// That fetch is the last thing this project asks of GitHub, and it asks
+		// for source rather than binaries: what runs on the fleet is compiled
+		// on this host.
+		from := sourceDir
+		if from == "" {
+			tmp, err := os.MkdirTemp("", "feast-watch-src-")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			defer os.RemoveAll(tmp)
+			fmt.Printf("fetching source for %s from %s\n", version, sourceURL)
+			if err := build.FetchSource(context.Background(), &http.Client{Timeout: 5 * time.Minute},
+				sourceURL, version, tmp); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			from = tmp
+		}
+
+		fmt.Printf("building %s from %s\n", version, from)
+		if err := build.Build(from, buildDir, version); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -183,7 +209,7 @@ func main() {
 	// everything else in this repository was built around.
 	var source release.Source
 	var binaries api.BinarySource
-	if sourceDir != "" {
+	if selfBuild {
 		local := build.New(buildDir)
 		source, binaries = local, local
 	} else {
@@ -208,7 +234,7 @@ func main() {
 	// writer of a SQLite database and has to close it cleanly.
 	promotePath := env("FW_MOTHER_PROMOTE_PATH", "/usr/local/sbin/feast-watch-mother-promote")
 	updater := selfupdate.New(st, selfupdate.Config{
-		ReleaseBaseURL: motherReleaseBaseURL(sourceDir, publicURL),
+		ReleaseBaseURL: motherReleaseBaseURL(selfBuild, publicURL),
 		PromotePath:    promotePath,
 		StageDir:       env("FW_MOTHER_STAGE_DIR", filepath.Join(filepath.Dir(dbPath), "update")),
 		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
@@ -238,9 +264,9 @@ func main() {
 	}
 	if binaries != nil {
 		a.SetBinarySource(binaries)
-		if sourceDir != "" {
+		if selfBuild {
 			slog.Info("serving this mother's own builds", "catalogue", buildDir,
-				"source", sourceDir, "agents_download_from", publicURL)
+				"agents_download_from", publicURL)
 		}
 	}
 	a.SetMotherUpdate(updater)
@@ -313,8 +339,8 @@ func main() {
 // of being the one client that never noticed.
 //
 // From the release host otherwise, which is where its builds actually are.
-func motherReleaseBaseURL(sourceDir, publicURL string) string {
-	if sourceDir != "" {
+func motherReleaseBaseURL(selfBuild bool, publicURL string) string {
+	if selfBuild {
 		return publicURL
 	}
 	return env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL)
