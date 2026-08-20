@@ -56,11 +56,11 @@ stop_service() {
   # `is-enabled` and `is-active` both exit non-zero for an absent unit, which is
   # exactly the state a re-run is in — so they gate rather than fail.
   if systemctl is-active --quiet "$UNIT_NAME"; then
-    systemctl stop "$UNIT_NAME"
+    systemctl stop "$UNIT_NAME" || echo "could not stop $UNIT_NAME; removing its files anyway" >&2
     say "stopped $UNIT_NAME"
   fi
   if systemctl is-enabled --quiet "$UNIT_NAME" 2>/dev/null; then
-    systemctl disable "$UNIT_NAME"
+    systemctl disable "$UNIT_NAME" || echo "could not disable $UNIT_NAME; removing its files anyway" >&2
     say "disabled $UNIT_NAME"
   fi
 }
@@ -83,7 +83,12 @@ prune_conf_dir() {
 reload_systemd() {
   command -v systemctl >/dev/null 2>&1 || return 0
   [ "$DRY_RUN" -eq 1 ] && return 0
-  systemctl daemon-reload
+  # Tolerated, not required. By the time this runs the unit file is already
+  # gone, so a reload that cannot happen — no privilege, no running systemd,
+  # a container — means systemd was not told, not that the removal failed.
+  # Aborting here would leave a host half-cleaned over a notification, which is
+  # strictly worse than a stale unit in systemd's memory until the next reload.
+  systemctl daemon-reload || echo "could not reload systemd; the unit files are already removed" >&2
   # A unit that died before being removed stays in "failed" and shows up in
   # `systemctl --failed` forever otherwise.
   systemctl reset-failed "$UNIT_NAME" 2>/dev/null || true

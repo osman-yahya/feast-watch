@@ -11,6 +11,12 @@
 # endpoint reissues.
 #
 # Runs against a temp tree via FW_ROOT, so it needs neither root nor systemd.
+#
+# "Nor systemd" has to mean a systemd that REFUSES, not only one that is absent.
+# This passed on a laptop with no systemctl at all while failing on CI, where
+# systemctl exists and answers an unprivileged daemon-reload with "Interactive
+# authentication required" — which killed the uninstaller under set -e. The
+# uninstallers now treat those calls as notifications rather than requirements.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
