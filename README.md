@@ -23,6 +23,12 @@ The mother serves plain HTTP and does not terminate TLS; it is reached over a
 private network, and where TLS is wanted a reverse proxy goes in front of it
 (see [`QUICKSTART.md`](QUICKSTART.md)).
 
+The mother also **compiles the binaries its fleet runs**. `feast-watch build
+<version>` cross-compiles every platform from source on the mother's host and
+publishes them into a catalogue it serves; agents download from their mother and
+from nowhere else, because a monitored host has no route off the private network
+(see [Agents never reach the internet](QUICKSTART.md#agents-never-reach-the-internet)).
+
 Every connection is opened by the **agent**: it pushes, and the mother's
 *response* carries the config it wants applied — collector set, interval, and
 the version to update to. Agents run no listener and the mother never dials a

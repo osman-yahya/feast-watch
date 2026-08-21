@@ -30,7 +30,7 @@ Where Docker is not available — a laptop, or a quick check between edits —
 `e2e/local_smoke.sh` runs the mother and an agent as plain binaries against a
 throwaway database in a temp directory, removing everything on exit. It asserts
 the same push → rollup → chart path plus groups, rollout validation against the
-published releases, and the settings payload rules:
+mother's build catalogue, and the settings payload rules:
 
 ```bash
 ./e2e/local_smoke.sh
@@ -52,6 +52,27 @@ published releases, and the settings payload rules:
    that needs a Go toolchain on this host, and the price of answering to nothing
    outside it.
 
+   The toolchain itself comes with the installer — `deploy/mother-install.sh`
+   downloads the pinned Go, verifies its published SHA-256, unpacks it into
+   `/usr/local/go` and links it as `/usr/local/bin/go`. A host that already has
+   a new-enough Go keeps it, `--skip-go` opts out entirely, and
+   `mother-uninstall.sh --purge` removes only a toolchain the installer put
+   there (it records `go=` in the manifest to tell the two apart).
+
+   Run it as the service account, as above. The toolchain's caches go beside the
+   catalogue when the environment names none, so this works despite
+   `feast-watch` having no home directory — which the unit wants and the Go
+   toolchain otherwise refuses to compile without. Where the caches should live
+   somewhere else, or have been seeded by hand on a host with no egress, name
+   them and they are used as given:
+
+   ```bash
+   sudo -u feast-watch \
+     FW_DB_PATH=/var/lib/feast-watch/mother.db \
+     GOMODCACHE=/var/lib/feast-watch/gomod \
+     feast-watch build v1.3.0
+   ```
+
    The tag *is* the version: it is what gets compiled in and what agents ask
    for, with no mapping in between. **A version is built once.** Rebuilding one
    that already exists is refused, because agents compare versions as strings
@@ -61,16 +82,17 @@ published releases, and the settings payload rules:
    renames at the end, so a version never appears in the catalogue holding four
    of its six platforms.
 
-   Fetching the source is the last thing this project asks of GitHub, and it
-   asks for **source rather than binaries**: what the fleet runs is compiled on
-   this host. Point `FW_SOURCE_DIR` at a checkout instead and even that goes
-   away — useful for a private fork, or a host that can reach nothing.
+   Fetching the source is the only thing this project asks of the internet, only
+   this host asks it, and it asks for **source rather than binaries**: what the
+   fleet runs is compiled here. Point `FW_SOURCE_DIR` at a checkout instead and
+   even that goes away — useful for a private fork, or a host that can reach
+   nothing.
 
-   Set `FW_SELF_BUILD=true` in `/etc/feast-watch/mother.env` and the mother reads
-   that catalogue as its release index — which versions exist, which platforms
-   each covers — and serves the binaries themselves at GitHub's own URL shape.
-   Nothing in the loop reaches the internet: not the bytes, not the tag that
-   names them.
+   There is no switch for any of this. The mother reads that catalogue as its
+   release index — which versions exist, which platforms each covers — and
+   serves the binaries themselves at GitHub's own URL shape. Nothing in the loop
+   reaches the internet: not the bytes, not the tag that names them, and nothing
+   on the fleet has anywhere else to ask.
 
    **This replaces GitHub Releases**, and with it the CI that used to publish
    them. What CI checked now runs from `bin/check.sh`, which anyone can run and
@@ -81,57 +103,47 @@ published releases, and the settings payload rules:
    bin/check.sh go         # just the Go suite
    ```
 
-   Without `FW_SELF_BUILD` the mother still reads published GitHub releases
-   instead, which is the arrangement the rest of this document was written
-   around and remains supported.
+   What it costs, stated plainly: this mother is the only authority for what a
+   version means. Nothing outside it computed the checksum an agent verifies
+   against, and there is no published artifact left to compare a build with —
+   reproducing a version means having the same source tree, not fetching the
+   same file. And binary distribution is now on the monitoring path: the
+   mother's disk and its uptime decide whether a rollout can land. Each build is
+   about 12MB per platform, nothing is evicted automatically, and the catalogue
+   lives under `StateDirectory`, so `mother-uninstall.sh --purge` removes it.
 
-### Agents that cannot reach the internet
+### Agents never reach the internet
 
-Agents download their own binaries from GitHub Releases, which keeps binary
-distribution off the monitoring path entirely: the mother stores no builds,
-serves no bytes, and a rollout cannot be blocked by the mother's disk. That is
-the better arrangement wherever it works.
+An agent has exactly one address: `MOTHER_URL`. It pushes there, it is told what
+to become there, and it downloads the binary to become there — from
+`/releases/latest/download/<asset>` and `/releases/download/<tag>/<asset>`, the
+URL shape a release host used to answer, now answered out of the catalogue the
+mother compiled. There is no second host in `agent.conf` to point somewhere
+else, because a fleet with no route off its network has nowhere else to point.
 
-Where it does not — a fleet whose agents have no route to the internet — the
-mother can stand in the middle:
+The served installer writes that one address too, so a host is never handed a
+URL it cannot resolve. If the download 404s, nothing has been built on the
+mother yet — run `feast-watch build <version>` there, then re-run the one-liner.
 
-```bash
-# /etc/feast-watch/mother.env
-FW_MIRROR_BINARIES=true
-```
+What an agent verifies is still verified: the mother writes a SHA-256 beside
+every binary it compiles, the agent fetches both and refuses anything that does
+not match. What the checksum no longer proves is that somebody *else* agreed
+what the bytes should be — the mother built them and vouches for them. That is
+the trade, and what buys it back is that there is no third party in the path at
+all.
 
-The mother then serves GitHub's own URL shape (`/releases/download/<tag>/<asset>`
-and `/releases/latest/download/<asset>`), fetching each build the first time it
-is asked for, verifying it against the checksum GitHub published, and keeping it
-under `/var/lib/feast-watch/binaries/`. Agents need no new code and no new
-protocol: `RELEASE_BASE_URL` was always their way of being told where to
-download from, and the installer now writes the mother's address into it.
-
-What this changes, stated plainly:
-
-- Binary distribution is now on the monitoring path. The mother's disk and its
-  uptime decide whether a rollout can land.
-- Each build is about 12MB per platform. Nothing is evicted automatically; the
-  cache lives under `StateDirectory`, so `mother-uninstall.sh --purge` removes it.
-- The mother still needs to reach `github.com` itself. If nothing can, a build
-  has to be carried in by hand — mirroring solves the agents' isolation, not the
-  mother's.
-- The chain is unbroken, not merely shortened: CI computes the checksum, the
-  mother refuses anything that does not match it, and the agent verifies again
-  before replacing itself. The mother adds a hop, never an authority — it builds
-  nothing and signs nothing.
-
-**Existing agents keep their old setting.** The installer writes
-`RELEASE_BASE_URL` at install time, so hosts installed before this was turned on
-still name GitHub. Point them at the mother by editing that line in
-`/etc/feast-watch/agent.conf` and restarting `feast-watch-agent`, or by re-running
-the served installer.
+**Hosts installed before this change** carry a `RELEASE_BASE_URL` line in
+`/etc/feast-watch/agent.conf` naming GitHub. Newer agents ignore it; the line is
+inert and can be deleted. Their next update comes from the mother either way.
 
 ### Upgrading the mother
 
-From the panel: open the Mother card on the monitoring page, pick a published
-version, confirm. The mother downloads that build from GitHub Releases, verifies
-its SHA-256, stages it in `/var/lib/feast-watch/update/`, and shuts down. systemd
+From the panel: open the Mother card on the monitoring page, pick a built
+version, confirm. The mother downloads that build from its own catalogue, over
+its own HTTP surface — the exact path the fleet's updates travel, so a broken
+download is something it finds out about its own update rather than being the
+one client that never noticed. It verifies
+the SHA-256, stages it in `/var/lib/feast-watch/update/`, and shuts down. systemd
 restarts it, `ExecStartPre=+/usr/local/sbin/feast-watch-mother-promote` installs
 the staged binary as root, and the new one starts. The panel is unreachable for a
 few seconds in the middle; while a target is pending it shows that rather than an
@@ -153,23 +165,29 @@ containerised mother by building a new image.
 **By hand**, if the panel is not available:
 
 ```bash
-sudo deploy/mother-install.sh --download            # newest published build
-sudo deploy/mother-install.sh --download=v1.4.0     # a specific one
+sudo deploy/mother-install.sh --build              # compile from this checkout
+sudo deploy/mother-install.sh --download           # published bootstrap build
+sudo deploy/mother-install.sh --download=v1.4.0    # a specific one
 ```
 
-`--download` fetches the published mother binary for this host's architecture,
-verifies its SHA-256, and installs it — the same rule the agent installer and
-the mother's own self-update apply. Nothing else has to be on the host: no Go
-toolchain, no checkout, no build. `--with-agent` takes its agent binary from the
-same release.
+`--download` fetches a published mother binary for this host's architecture,
+verifies its SHA-256, and installs it. It is the **bootstrap and only the
+bootstrap**: a first mother has to come from somewhere, and this host — unlike
+every host it will go on to monitor — is the one with a route off the network.
+Afterwards the mother produces its own replacements, with the Go toolchain the
+installer put here alongside it — which is what `--build` uses to compile the
+mother from a checkout instead, no published release needed. `--with-agent`
+takes its agent binary from this mother's catalogue, the same place every other
+agent on the fleet takes one from.
 
-The mother is a statically linked pure-Go binary: it links no libc, embeds its
-SQLite (`modernc.org/sqlite`, no cgo), shells out to nothing, and compiles
-nothing at runtime. A host that can run it needs no compiler afterwards, which
-is also why the container image is a bare `alpine` plus the binary.
+The mother binary itself is statically linked pure Go: it links no libc, embeds
+its SQLite (`modernc.org/sqlite`, no cgo) and shells out to nothing at runtime.
+What it does need on its host is Go, for `feast-watch build` — which is why the
+container image is `golang` with the source and the module cache in it rather
+than a bare `alpine`.
 
-Building on the host instead — for an unreleased fix or a private fork — still
-works and is the one case that needs Go:
+Building on the host by hand — for an unreleased fix or a private fork — is the
+same toolchain doing the same work in two steps instead of one:
 
 ```bash
 bin/release.sh --mother-only
@@ -243,13 +261,13 @@ configuration — which is what lets the mother's host be firewalled as
   push**, never a request to a host. The mother does record each agent's IP,
   but only to show it in the panel — no code path connects to it, and the
   fleet works identically with all outbound traffic from the mother blocked.
-- **The mother's only egress is the GitHub API**, `api.github.com` — a
-  conditional GET of the release list every 5 minutes
-  (`FW_RELEASE_POLL_INTERVAL`), so it can offer only rollout targets that are
-  actually downloadable. It is optional: see the closed-egress note below.
-- **Binaries never cross the monitoring path.** The mother names a version;
-  the agent downloads that build from the public GitHub release and verifies
-  its SHA-256 itself. The mother stores no binaries and serves no bytes.
+- **The mother's only egress is a source archive**, `github.com`, and only when
+  `feast-watch build` is run without `FW_SOURCE_DIR`. Nothing fetches it on a
+  timer and nothing needs it to serve, ingest or roll out — see the
+  closed-egress note below.
+- **Agents have exactly one peer.** They push to the mother, and they download
+  the binary it named from the same address, verifying the SHA-256 the mother
+  wrote beside it. A monitored host resolves nothing but `FW_PUBLIC_URL`.
 
 ### What to open
 
@@ -260,15 +278,13 @@ On the **mother host**:
 | in | every monitored host | `FW_LISTEN` (`8443`) | `POST /v1/ingest` (agent token) |
 | in | feast backend (api pods) | `FW_LISTEN` | `/api/*` with `X-API-Key`, for the admin panel proxy |
 | in | a host being installed | `FW_LISTEN` | `GET /install/{token}.sh`, `GET /uninstall.sh` |
-| out | `api.github.com:443` | 443 | release index only |
+| out | `github.com:443` | 443 | source archive, only while running `feast-watch build` |
 
 Nothing else. In particular there is no mother→agent rule to write.
 
-On a **monitored host**: no inbound rule at all. Outbound to the mother's
-`FW_PUBLIC_URL`, and — only while installing or self-updating — to the release
-host (`RELEASE_BASE_URL`, by default `github.com`, which redirects downloads to
-`objects.githubusercontent.com`). Point `RELEASE_BASE_URL` at an internal
-mirror to drop that one too.
+On a **monitored host**: no inbound rule at all, and outbound to the mother's
+`FW_PUBLIC_URL` and nothing else — pushes, the install script, the uninstaller
+and the binaries all live there.
 
 `ufw` on the mother, spelled out:
 
@@ -277,24 +293,32 @@ ufw default deny incoming
 ufw default deny outgoing
 ufw allow proto tcp from <agent-subnet>   to any port 8443
 ufw allow proto tcp from <backend-subnet> to any port 8443
-ufw allow out 53                 # resolve api.github.com
-ufw allow out proto tcp to any port 443   # the release index
+ufw allow out 53                 # resolve github.com
+ufw allow out proto tcp to any port 443   # source archives for `feast-watch build`
 ```
 
 ### Closing the egress completely
 
-Drop the `443` rule and the mother stops reading GitHub. Two consequences,
-both bounded:
+Drop the `443` rule and the mother can no longer fetch a source archive. That is
+the only thing it loses, and there is a direct replacement: carry a checkout onto
+the host and point `FW_SOURCE_DIR` at it.
 
-1. The rollout dropdown has no versions to offer, so state them by hand with
-   `FW_AGENT_VERSIONS` (see [`.env.example`](.env.example)). A successful
-   fetch would replace the seed; with no route, the seed simply stands.
-2. The mother monitors its own host, and *that* agent then cannot self-update
-   either — it downloads from the same release host every other agent does.
-   Update it the way the mother itself is updated, by hand.
+```bash
+# /etc/feast-watch/mother.env
+FW_SOURCE_DIR=/opt/feast-watch/src
+```
 
-Neither touches ingest: agents keep pushing, the panel keeps reading, and a
-target set by hand still reaches every host.
+`feast-watch build v1.3.0` then compiles from that tree, the catalogue fills as
+before, and the fleet updates from it. Nothing else changes: the rollout dropdown
+reads the same catalogue, agents keep pushing, and the mother's own host — which
+runs an agent like any other — updates from the mother beside it.
+
+Two things have to be carried in rather than fetched, and both are one-time.
+The Go toolchain: install it while the egress is open, or with `--skip-go` and
+by hand — the installer's own download needs `go.dev`. And the module cache: a
+`go build` on a tree it has never compiled before reaches `proxy.golang.org`, so
+run one build before the egress closes, or bring `$GOMODCACHE` in with the
+source and name it (see step 1).
 
 ## Updating agents
 
@@ -307,9 +331,10 @@ curl -sf -H "X-API-Key: $FW_API_KEY" -X PUT \
 ```
 
 The agent picks the target up on its next push, downloads that build from the
-GitHub release, verifies the checksum, replaces itself and exits for systemd to
-restart it. The mother is never in the binary path, so a rollout cannot be
-blocked by a file nobody staged on it. Watch `update_state` on
+mother, verifies the checksum, replaces itself and exits for systemd to restart
+it. A version it was never given cannot be a target: the panel and the API both
+check against the catalogue, so a rollout fails at the point somebody typed it
+rather than on thirty hosts an hour later. Watch `update_state` on
 `GET /api/servers`: `pending` while it converges, `idle` once `agent_version`
 matches, `failed` with `update_error` if it could not install. Send
 `{"version":""}` to cancel a rollout that has not landed.
@@ -318,9 +343,9 @@ One host at a time is the intended rhythm — update it, confirm it, then the
 rest. A group target (below) is a fan-out over that same per-server field, not
 a second kind of state, so nothing about confirming a host first changes.
 
-The mother is not self-updating: `GET /api/version` reports its version so you
-can see what the agents should catch up to, but deploying it stays with
-systemd/Docker/k8s.
+The mother updates itself from the same catalogue, from the panel — see
+[Upgrading the mother](#upgrading-the-mother). `GET /api/version` reports what it
+is running, what it was told to become, and how that is going.
 
 ### Groups
 
@@ -520,10 +545,18 @@ sudo deploy/mother-install.sh --download
 sudo systemctl start feast-watch-mother
 ```
 
-That needs nothing on the host but `curl` and systemd: the published binary is
-downloaded and its SHA-256 verified before it is installed. To install a binary
-you built yourself — an unreleased fix, a private fork — pass its path instead,
-which is the one path that needs Go on the host:
+`--build` is the from-scratch path: the installer puts the Go toolchain on the
+host first, then compiles the mother from the checkout it was run out of, so no
+published release has to exist and nothing has to be built beforehand. With
+`--with-agent` it compiles the agent in the same pass, which is the whole of a
+brand-new deployment in one command.
+
+That bootstrap needs nothing on the host but `curl`, `tar` and systemd: the
+mother binary and the pinned Go toolchain are both downloaded and both verified
+against a SHA-256 before anything is installed. The toolchain is not optional
+here — this host compiles what the fleet runs — but `--skip-go` leaves it to you
+where the host provisions its own. To install a mother binary you built yourself
+— an unreleased fix, a private fork — pass its path instead:
 
 ```bash
 bin/release.sh v1.3.0
@@ -540,20 +573,19 @@ sudo deploy/mother-install.sh --with-agent --download
 ```
 
 It installs and starts the mother, registers this host under its own hostname,
-and installs the agent — both binaries from the same published release, each
-verified against its checksum.
-
-From a checkout it works without any release existing at all, which is what
-makes it the way to bring up a brand-new deployment:
+and installs the agent — the mother from the published bootstrap build, the
+agent from the mother's own catalogue, each verified against its checksum. On a
+brand-new deployment that catalogue is empty, so either run `feast-watch build
+<version>` on this host first, or let the installer compile both from the
+checkout in one pass:
 
 ```bash
-bin/release.sh v1.3.0
-sudo deploy/mother-install.sh --with-agent bin/build/feast-watch
+sudo deploy/mother-install.sh --with-agent --build
 ```
 
 Here the agent comes from the binary just built beside the mother, so nothing is
-fetched — unlike the served one-liner, which can only download from a published
-release.
+fetched at all — which is what makes this the way to bring up a deployment that
+has never compiled a version yet.
 
 The two share `/etc/feast-watch` but nothing else: separate binaries, separate
 units, separate config files. Each uninstaller removes only its own files and
