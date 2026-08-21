@@ -182,9 +182,16 @@ version_at_least() {
 
 # go_new_enough reports whether this Go can build the tree. `go version` prints
 # "go version go1.26.7 linux/amd64".
+#
+# GOTOOLCHAIN=local is what makes the answer true. Asked inside a module
+# directory, a modern `go` silently switches to the toolchain go.mod names —
+# downloading it if it must — and then reports THAT version. So an older Go
+# answers "go1.26.1" while being nothing of the kind, this check accepts it, and
+# every build afterwards pays a toolchain download over the network. Asking for
+# the local one is asking what is actually installed.
 go_new_enough() {
   local raw
-  raw=$("$1" version 2>/dev/null) || return 1
+  raw=$(GOTOOLCHAIN=local "$1" version 2>/dev/null) || return 1
   raw=${raw#go version go}
   raw=${raw%% *}
   [ -n "$raw" ] || return 1

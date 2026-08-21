@@ -138,6 +138,28 @@ run_ensure_go "$FIXTURE_SUM" "$BIN/one-short" >/dev/null || fail "ensure_go fail
   fail "go1.26.0 was accepted against a go.mod that pins 1.26.1; every build would fetch a toolchain"
 pass "the patch level is compared, not just major.minor"
 
+step "4c. the version is asked of the local toolchain, not the one go.mod names"
+# Inside a module directory a modern `go` switches to the toolchain go.mod names
+# and reports that version — so an old Go answers as a new one, is accepted, and
+# every build afterwards fetches a toolchain over the network. This stub answers
+# honestly only when asked for the local toolchain, which is what the check must
+# do.
+rm -rf "${ROOT:?}/usr"
+mkdir -p "$BIN/switcher"
+cat > "$BIN/switcher/go" <<'EOF'
+#!/usr/bin/env bash
+if [ "${GOTOOLCHAIN:-}" = local ]; then
+  echo "go version go1.25.0 linux/amd64"
+else
+  echo "go version go1.26.7 linux/amd64"
+fi
+EOF
+chmod 0755 "$BIN/switcher/go"
+run_ensure_go "$FIXTURE_SUM" "$BIN/switcher" >/dev/null || fail "ensure_go failed against a switching toolchain"
+[ -x "$ROOT/usr/local/go/bin/go" ] ||
+  fail "a go1.25 that reports itself as 1.26.7 inside a module was accepted"
+pass "the local toolchain is what answers"
+
 step "5. an architecture with no pinned toolchain is named, not guessed"
 out=$(FW_ROOT="$ROOT" PATH="$BASE_PATH" bash -c '
   set -euo pipefail
