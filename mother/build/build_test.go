@@ -118,6 +118,30 @@ func TestStoreListsWhatWasBuilt(t *testing.T) {
 	}
 }
 
+// The build's own caches live in the catalogue directory. They are not a
+// version, and a panel offering ".toolchain-cache" as a rollout target would be
+// offering something no agent could ever download.
+func TestStoreIgnoresItsOwnHousekeeping(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "builds")
+
+	t.Setenv("GOCACHE", "")
+	t.Setenv("GOMODCACHE", "")
+	if err := Build(tinySource(t, helloMain), out, "v9.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, toolchainCacheDir)); err != nil {
+		t.Fatalf("this test is asserting about a directory that was not created: %v", err)
+	}
+
+	agents, _, _, err := New(out).Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].Version != "v9.0.0" {
+		t.Fatalf("the catalogue listed something that is not a version: %+v", agents)
+	}
+}
+
 func TestStoreIsEmptyBeforeAnythingIsBuilt(t *testing.T) {
 	agents, mother, _, err := New(filepath.Join(t.TempDir(), "nothing")).Fetch(context.Background())
 	if err != nil {
@@ -144,5 +168,67 @@ func TestEnsureResolvesABuiltAssetAndRefusesAnythingElse(t *testing.T) {
 	}
 	if _, err := s.Ensure("v9.9.9", release.AssetName("linux", "amd64")); err == nil {
 		t.Fatal("a version that was never built must not resolve")
+	}
+}
+
+// The mother's service account is created with no home directory, which is what
+// its unit wants — and what the Go toolchain will not tolerate: with no HOME it
+// cannot place its build cache and refuses to compile anything at all. So the
+// build supplies caches of its own, beside the catalogue, in the state
+// directory the mother already owns.
+//
+// Without this, the one command that makes a fleet updatable fails on every
+// correctly-installed host, and only there — never on the laptop it was written
+// on.
+func TestBuildSuppliesItsOwnToolchainCaches(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "builds")
+
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv("GOCACHE", "")
+	t.Setenv("GOMODCACHE", "")
+	t.Setenv("GOPATH", "")
+
+	if err := Build(tinySource(t, helloMain), out, "v9.0.0"); err != nil {
+		t.Fatalf("a build must not need a home directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, toolchainCacheDir, "build")); err != nil {
+		t.Fatalf("no build cache was placed beside the catalogue: %v", err)
+	}
+}
+
+// An operator who names a cache keeps it. A host that pre-seeded $GOMODCACHE so
+// `feast-watch build` needs no network — the whole point on an air-gapped
+// mother — must not have the build quietly compile against an empty one it made
+// itself.
+func TestBuildKeepsTheCachesTheEnvironmentNames(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "builds")
+	named := t.TempDir()
+
+	t.Setenv("GOCACHE", filepath.Join(named, "build"))
+	t.Setenv("GOMODCACHE", filepath.Join(named, "mod"))
+
+	if err := Build(tinySource(t, helloMain), out, "v9.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(named, "build")); err != nil {
+		t.Fatalf("the named GOCACHE went unused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, toolchainCacheDir)); !os.IsNotExist(err) {
+		t.Fatalf("a cache was placed beside the catalogue despite the environment naming one: %v", err)
+	}
+}
+
+// A host with no compiler is the one failure this command exists to make
+// impossible, so when it happens anyway it has to say so in one line rather
+// than six times over as `exec: "go": executable file not found in $PATH`.
+func TestBuildNamesAMissingToolchain(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := Build(tinySource(t, helloMain), filepath.Join(t.TempDir(), "builds"), "v9.0.0")
+	if err == nil {
+		t.Fatal("a build with no toolchain must fail")
+	}
+	if !strings.Contains(err.Error(), "Go toolchain") {
+		t.Fatalf("the error does not name what is missing: %v", err)
 	}
 }

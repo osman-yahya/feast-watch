@@ -5,28 +5,34 @@
 #   sudo deploy/mother-install.sh --download=v1.4.0 --with-agent
 #   sudo deploy/mother-install.sh /path/to/feast-watch
 #   sudo deploy/mother-install.sh --with-agent /path/to/feast-watch
+#   sudo deploy/mother-install.sh --build --with-agent
+#   sudo deploy/mother-install.sh --download --skip-go
 #
-# --download fetches the published mother binary from GitHub Releases and
-# verifies its SHA-256 before installing it, exactly as the served agent
-# installer does and as the mother's own self-update does. Nothing else has to
-# be on the host: no Go toolchain, no checkout, no build. The mother is a
-# statically linked pure-Go binary — it shells out to nothing and compiles
-# nothing at runtime — so a host that can run it needs no compiler afterwards
-# either. Pass a path instead when you want a binary you built yourself.
+# --download fetches a published mother binary and verifies its SHA-256 before
+# installing it. It is the bootstrap and only the bootstrap: a first mother has
+# to come from somewhere, and this host — unlike every host it will go on to
+# monitor — is the one with a route off the network. Pass a path instead when
+# you want a binary you built yourself.
+#
+# After this, the mother is the source of every binary on the fleet, including
+# its own replacement. Producing one means a Go toolchain on THIS host, so this
+# installer puts one there — pinned by version and checksum, unless the host
+# already has a new-enough Go or --skip-go says not to:
+#
+#   FW_SOURCE_DIR=/path/to/checkout feast-watch build v1.5.0
+#   feast-watch build v1.5.0          # fetches that tag's source itself
 #
 # --with-agent also installs an agent on this same host, pointed at the mother
 # it just installed. That is the deployment the design assumes — the mother
-# monitors its own host.
+# monitors its own host — and its binary comes from where every other agent's
+# does: the mother's own catalogue, or the build sitting beside this script in
+# a checkout.
 #
-# Where its agent binary comes from follows the mother's: with --download, from
-# the same published release, which by then demonstrably exists because the
-# mother was just fetched from it; from a checkout, from the build sitting
-# beside the mother, so nothing is fetched and no release has to exist yet.
-# Either way it sidesteps the chicken-and-egg of the served installer, which
-# can only download from a published release.
+# --build compiles the mother from this checkout with the toolchain this script
+# just installed, which is the whole of a from-scratch deployment: no published
+# release has to exist and nothing has to be built beforehand.
 #
-# Run with --download, or from a checkout after `bin/release.sh`, or pass the
-# binary explicitly.
+# Run with --build, with --download, or pass a binary you built yourself.
 # Everything this creates is listed in /etc/feast-watch/mother-manifest and is
 # removed by deploy/mother-uninstall.sh — the two are meant to be read together.
 #
@@ -39,6 +45,15 @@ set -euo pipefail
 # FW_ROOT prefixes every path. Empty in production; the co-location test sets
 # it to a temp tree so this script can be exercised without being root.
 FW_ROOT="${FW_ROOT:-}"
+
+# SCRIPT_DIR is where the files this installer copies live — the unit files, the
+# promote helper, the uninstaller, and the source tree above them.
+#
+# From BASH_SOURCE rather than $0, because the shell tests source this file to
+# exercise one function at a time: sourced, $0 is the calling shell and every
+# sibling path resolves against whatever directory the test happened to be run
+# from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BIN_DEST="$FW_ROOT/usr/local/bin/feast-watch"
 AGENT_BIN_DEST="$FW_ROOT/usr/local/bin/feast-watch-agent"
@@ -54,12 +69,59 @@ PROMOTE_DEST="$FW_ROOT/usr/local/sbin/feast-watch-mother-promote"
 AGENT_MANIFEST="$CONF_DIR/install-manifest"
 SERVICE_USER=feast-watch
 
-# Where published builds come from. Overridable so e2e/download_test.sh can
-# point it at a local tree instead of github.com.
+# The Go toolchain this host compiles the fleet with.
+#
+# It is installed here rather than left to the operator because it is not
+# optional any more: the mother produces every binary its agents run, so a
+# mother without a compiler is a fleet that can never be updated. Making the
+# installer responsible for it means one command leaves a host able to do the
+# whole job, instead of a host that looks installed and fails at the first
+# `feast-watch build`.
+#
+# Pinned by version AND by checksum. The version because a toolchain that
+# changes under a deployment changes the binaries it produces; the checksum
+# because this is an unauthenticated download that becomes the compiler every
+# binary on the fleet is built by — the one place where trusting whatever
+# answered would be worst.
+GO_VERSION="${GO_VERSION:-1.26.7}"
+GO_DL_BASE="${GO_DL_BASE:-https://go.dev/dl}"
+GO_ROOT="$FW_ROOT/usr/local/go"
+GO_LINK="$FW_ROOT/usr/local/bin/go"
+
+# GO_MIN_MINOR is the oldest Go that can build this tree — the `go` line in
+# go.mod. An existing toolchain at least this new is used as it is; anything
+# older is not, because the compiler's own error for a too-new language version
+# arrives as a wall of syntax errors rather than as a version complaint.
+GO_MIN_MINOR=26
+
+# GO_INSTALLED records whether the toolchain on this host is one we put there.
+# The manifest carries it, so the uninstaller removes a compiler this installer
+# installed and leaves alone one that was already here — removing somebody
+# else's Go would be a footprint we never declared.
+GO_INSTALLED=0
+
+# go_sha256 is the published SHA-256 of the tarball for one platform, pinned.
+# Updating GO_VERSION means updating these together — from
+# https://go.dev/dl/?mode=json — and a pair that does not match is a refused
+# install rather than a compiler nobody checked.
+go_sha256() {
+  case "$1" in
+    linux-amd64) echo "ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca" ;;
+    linux-arm64) echo "5a4ec883379d51ee9ce1040d5e87f8d35e20387574dd8c947feb01eabc3c1b37" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Where a FIRST mother binary is fetched from with --download. Nothing else in
+# this project reads it: agents download from their mother, and the mother
+# compiles its own replacements. Overridable so e2e/download_test.sh can point
+# it at a local tree instead of github.com.
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/osman-yahya/feast-watch}"
 
 # fetch_release_binary downloads one published asset and verifies it before it
-# is allowed to become anything.
+# is allowed to become anything. Used for the bootstrap mother binary, and for
+# the co-located agent when it is taken from the mother's own catalogue — the
+# URL shape is the same either way, which is why one function serves both.
 #
 # --fail is not optional. Without it `curl -o` exits 0 on an HTTP 404 and writes
 # the response body, so a missing asset would install an error page as the
@@ -69,7 +131,7 @@ RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/osman-yahya/feast-watch
 # The checksum is fetched second but is what decides: a build published without
 # one, or one whose bytes do not match, is refused rather than installed. This
 # is the same rule the agent installer and the mother's self-update apply, and
-# it is the only thing standing between a rollout and whatever a CDN handed us.
+# it is what stands between an install and whatever answered the request.
 fetch_release_binary() {
   local asset="$1" dest="$2" version="$3" url
   if [ "$version" = "latest" ]; then
@@ -97,6 +159,124 @@ fetch_release_binary() {
   fi
 
   install -m 0755 "$tmp" "$dest"
+}
+
+# go_new_enough reports whether this Go can build the tree. `go version` prints
+# "go version go1.26.7 linux/amd64"; only the major and minor decide.
+go_new_enough() {
+  local raw major rest minor
+  raw=$("$1" version 2>/dev/null) || return 1
+  raw=${raw#go version go}
+  raw=${raw%% *}
+  major=${raw%%.*}
+  rest=${raw#*.}
+  minor=${rest%%.*}
+  case "$major$minor" in
+    *[!0-9]*|"") return 1 ;;
+  esac
+  [ "$major" -gt 1 ] && return 0
+  [ "$major" -eq 1 ] && [ "$minor" -ge "$GO_MIN_MINOR" ]
+}
+
+# usable_go prints the path of a Go new enough to build this project, if the
+# host already has one. Ours is preferred over whatever is on PATH: on a host
+# where both exist, the one this installer pinned is the one the checksums
+# describe.
+usable_go() {
+  local candidate
+  for candidate in "$GO_ROOT/bin/go" "$(command -v go 2>/dev/null || true)"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if go_new_enough "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# install_go downloads the pinned toolchain, verifies it, and puts it where any
+# user on this host will find it.
+#
+# The symlink is the point: `feast-watch build` shells out to `go` and is run as
+# the unprivileged service account, whose non-login shell inherits none of the
+# PATH edits a profile script would make. /usr/local/bin is on every default
+# PATH there is, including that one.
+install_go() {
+  local platform="$1" want got url tmp
+  want=$(go_sha256 "$platform") || {
+    echo "no pinned Go build for $platform — install a Go >= 1.$GO_MIN_MINOR by hand, then re-run with --skip-go" >&2
+    return 1
+  }
+  url="$GO_DL_BASE/go$GO_VERSION.$platform.tar.gz"
+
+  tmp=$(mktemp)
+  # shellcheck disable=SC2064  # expand tmp now: it must be removed on any exit
+  trap "rm -f '$tmp'" RETURN
+
+  echo "-> downloading Go $GO_VERSION ($platform)"
+  curl -fsSL "$url" -o "$tmp" ||
+    { echo "could not download $url" >&2; return 1; }
+
+  got=$(sha256sum "$tmp" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$tmp" | cut -d' ' -f1)
+  if [ "$want" != "$got" ]; then
+    echo "checksum mismatch for the Go toolchain: refusing to install it" >&2
+    return 1
+  fi
+
+  # Replaced whole rather than extracted over: a tarball unpacked on top of an
+  # older tree leaves that tree's files behind, and a toolchain half of one
+  # version and half of another fails in ways nobody should have to debug.
+  rm -rf "$GO_ROOT"
+  mkdir -p "$(dirname "$GO_ROOT")" "$(dirname "$GO_LINK")"
+  tar -C "$(dirname "$GO_ROOT")" -xzf "$tmp" ||
+    { echo "could not extract the Go toolchain" >&2; return 1; }
+  ln -sf "$GO_ROOT/bin/go" "$GO_LINK"
+  echo "   installed $GO_ROOT, linked as $GO_LINK"
+  GO_INSTALLED=1
+}
+
+# build_here compiles the mother (and, with --with-agent, the agent) from this
+# checkout, using the toolchain ensure_go just guaranteed.
+#
+# This is what makes a bare host one command from a running mother without a
+# published release in the picture at all. It is also the only order that works:
+# building needs Go, Go arrives with this installer, so the build cannot be
+# something the operator was expected to have done beforehand.
+build_here() {
+  local both="$1" release_sh
+  release_sh="$SCRIPT_DIR/../bin/release.sh"
+  [ -f "$release_sh" ] || {
+    echo "--build needs the source tree: $release_sh is not there" >&2
+    return 1
+  }
+
+  echo "-> building from this checkout"
+  # The installed toolchain is put on PATH explicitly: the shell running this
+  # installer was started before that toolchain existed, so it does not have it.
+  local args=(--mother-only)
+  [ "$both" -eq 1 ] && args=()
+  PATH="$(dirname "$GO_LINK"):$GO_ROOT/bin:$PATH" bash "$release_sh" "${args[@]}" >&2 ||
+    { echo "the build failed; nothing was installed" >&2; return 1; }
+}
+
+# ensure_go leaves this host with a compiler, or says why it could not.
+ensure_go() {
+  local existing
+  if existing=$(usable_go); then
+    echo "-> using the Go toolchain already on this host ($existing)"
+    return 0
+  fi
+  install_go "$1"
+}
+
+# mother_port reads the port the mother listens on out of its env file, so the
+# agent beside it and the fetch of that agent's binary both address the mother
+# that is actually running rather than a default one of them assumed.
+mother_port() {
+  local listen
+  listen=$(sed -n 's/^FW_LISTEN=//p' "$ENV_FILE")
+  listen="${listen##*:}"
+  echo "${listen:-8443}"
 }
 
 # release_platform is the "<goos>-<goarch>" half of an asset name for this host.
@@ -129,9 +309,19 @@ seed_env_file() {
     echo "FW_LISTEN=:8443"
     echo "# The URL agents are told to reach the mother on, scheme included. The"
     echo "# mother serves plain HTTP; name a fronting proxy here if TLS is"
-    echo "# terminated in front of it."
+    echo "# terminated in front of it. It is also where agents download their"
+    echo "# binaries from, because it is the only address they have."
     echo "FW_PUBLIC_URL=http://127.0.0.1:8443"
     echo "FW_API_KEY=change-me"
+    echo
+    echo "# The build catalogue: what \`feast-watch build\` writes and what this"
+    echo "# mother serves to its fleet. Defaults beside the database."
+    echo "# FW_BUILD_DIR=/var/lib/feast-watch/builds"
+    echo "# Where \`feast-watch build\` takes source from when no FW_SOURCE_DIR"
+    echo "# is set: the tag's own archive, over the one route off this network"
+    echo "# that only this host needs."
+    echo "# FW_SOURCE_URL=https://github.com/osman-yahya/feast-watch"
+    echo "# FW_SOURCE_DIR=/opt/feast-watch/src"
   } > "$ENV_FILE"
   echo "   wrote $ENV_FILE — set FW_API_KEY and FW_PUBLIC_URL before starting"
 }
@@ -144,7 +334,7 @@ seed_env_file() {
 # the two together is what keeps that reference from dangling.
 install_promote_helper() {
   local src
-  src="$(dirname "$0")/feast-watch-mother-promote"
+  src="$SCRIPT_DIR/feast-watch-mother-promote"
   [ -f "$src" ] || { echo "promote helper not found at $src" >&2; return 1; }
 
   echo "-> installing promote helper"
@@ -161,6 +351,10 @@ write_manifest() {
     echo "unit=$UNIT"
     echo "promote=$PROMOTE_DEST"
     echo "backup=$BIN_DEST.bak"
+    if [ "$GO_INSTALLED" -eq 1 ]; then
+      echo "go=$GO_ROOT"
+      echo "go_link=$GO_LINK"
+    fi
     echo "staged=/var/lib/feast-watch/update"
     echo "state=/var/lib/feast-watch"
     echo "user=$SERVICE_USER"
@@ -175,7 +369,7 @@ write_manifest() {
 # generate`, which writes to the same database the service owns, and SQLite
 # takes a single writer.
 install_local_agent() {
-  local source_dir="$1" platform="$2" version="$3" name
+  local source_dir="$1" platform="$2" name
   name="$(hostname -s 2>/dev/null || hostname)"
 
   echo "-> registering this host as '$name'"
@@ -187,33 +381,36 @@ install_local_agent() {
           sed -n 's|.*/install/\(tk_[0-9a-f]*\)\.sh.*|\1|p')
   [ -n "$token" ] || { echo "could not read a token from feast-watch generate" >&2; return 1; }
 
-  # Two sources, one destination. With --download the agent comes from the same
-  # release as the mother, which is also what removes the old chicken-and-egg
-  # here: the served installer downloads from a published release, and with
-  # --download one demonstrably exists — we just fetched the mother from it.
-  if [ -n "$platform" ]; then
-    echo "-> downloading agent $version ($platform)"
-    fetch_release_binary "feast-watch-agent-$platform" "$AGENT_BIN_DEST" "$version" || return 1
-  else
-    local agent_src="$source_dir/feast-watch-agent"
-    [ -f "$agent_src" ] || {
-      echo "agent binary not found at $agent_src — run bin/release.sh first, or pass --download" >&2
-      return 1
-    }
+  # Two sources, one destination. From a checkout, the agent built beside the
+  # mother; otherwise from the mother that was just started, over the loopback,
+  # exactly as every other agent on the fleet gets its binary.
+  #
+  # The second path needs the mother to have built something. It is a fresh
+  # install, so usually it has not — hence the message rather than a bare 404:
+  # what the operator has to do next is one command on this same host.
+  local agent_src="$source_dir/feast-watch-agent"
+  if [ -n "$source_dir" ] && [ -f "$agent_src" ]; then
     echo "-> installing agent binary"
     install -m 0755 "$agent_src" "$AGENT_BIN_DEST"
+  else
+    echo "-> downloading agent $platform from this mother's catalogue"
+    RELEASE_BASE_URL="http://127.0.0.1:$(mother_port)" \
+      fetch_release_binary "feast-watch-agent-$platform" "$AGENT_BIN_DEST" latest || {
+        echo "this mother has built no agent for $platform yet — run" >&2
+        echo "  $BIN_DEST build <version>" >&2
+        echo "on this host, then re-run this installer with --with-agent" >&2
+        return 1
+      }
   fi
 
   if [ -f "$AGENT_CONF" ]; then
     echo "   kept existing $AGENT_CONF"
   else
     # The mother is reached over the loopback: the agent is on the same host,
-    # so its traffic never needs to leave it whatever FW_PUBLIC_URL says.
-    local listen port
-    listen=$(sed -n 's/^FW_LISTEN=//p' "$ENV_FILE")
-    port="${listen##*:}"
+    # so its traffic never needs to leave it whatever FW_PUBLIC_URL says. That
+    # address is also where its updates come from — an agent has one host.
     {
-      echo "MOTHER_URL=http://127.0.0.1:${port:-8443}"
+      echo "MOTHER_URL=http://127.0.0.1:$(mother_port)"
       echo "TOKEN=$token"
       echo "SERVER_NAME=$name"
     } > "$AGENT_CONF"
@@ -224,7 +421,7 @@ install_local_agent() {
   install_agent_uninstaller
 
   echo "-> installing agent unit"
-  install -m 0644 "$(dirname "$0")/feast-watch-agent.service" "$AGENT_UNIT"
+  install -m 0644 "$SCRIPT_DIR/feast-watch-agent.service" "$AGENT_UNIT"
   systemctl daemon-reload
   systemctl enable --now "$AGENT_UNIT_NAME"
 }
@@ -244,7 +441,7 @@ install_local_agent() {
 # byte-identical removal behaviour.
 install_agent_uninstaller() {
   local src
-  src="$(dirname "$0")/../mother/api/uninstall.sh"
+  src="$SCRIPT_DIR/../mother/api/uninstall.sh"
   [ -f "$src" ] || { echo "uninstall script not found at $src" >&2; return 1; }
 
   echo "-> installing agent uninstaller"
@@ -276,24 +473,51 @@ was_active() {
 main() {
   local with_agent=0
   local download=0
+  local skip_go=0
+  local build=0
   local version=latest
   local args=()
   for arg in "$@"; do
     case "$arg" in
       --with-agent) with_agent=1 ;;
       --download) download=1 ;;
+      --skip-go) skip_go=1 ;;
+      --build) build=1 ;;
       --download=*) download=1; version="${arg#--download=}" ;;
       *) args+=("$arg") ;;
     esac
   done
 
-  local source="${args[0]:-$(dirname "$0")/../bin/build/feast-watch}"
+  local source="${args[0]:-$SCRIPT_DIR/../bin/build/feast-watch}"
 
   [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; return 1; }
 
-  local platform=""
+  # The platform names three things: the mother asset to fetch, the agent build
+  # to install beside it, and the Go tarball for this machine. Every path below
+  # wants at least one of them.
+  local platform
+  platform=$(release_platform) || return 1
+
+  # The toolchain first, before anything that might need it. --build does; and
+  # even without it this host cannot produce a version for its fleet until a
+  # compiler is here, so the install is not finished without one either way.
+  if [ "$skip_go" -eq 1 ]; then
+    echo "-> skipping the Go toolchain as asked; \`feast-watch build\` needs one on PATH"
+  else
+    ensure_go "$platform" || return 1
+  fi
+
+  if [ "$build" -eq 1 ]; then
+    build_here "$with_agent" || return 1
+    source="$SCRIPT_DIR/../bin/build/feast-watch"
+  fi
+
+  # Where a locally built agent would be, when this is a checkout rather than a
+  # download. Read before --download replaces `source` with a temp file.
+  local agent_source_dir=""
+  [ "$download" -eq 1 ] || agent_source_dir="$(dirname "$source")"
+
   if [ "$download" -eq 1 ]; then
-    platform=$(release_platform) || return 1
     # Downloaded into a temp file rather than straight onto BIN_DEST: the
     # install below is what replaces the binary, and doing it in one place
     # keeps a failed download from ever touching a running mother.
@@ -332,7 +556,7 @@ main() {
   chown root:"$SERVICE_USER" "$ENV_FILE"
 
   echo "-> installing unit"
-  install -m 0644 "$(dirname "$0")/feast-watch-mother.service" "$UNIT"
+  install -m 0644 "$SCRIPT_DIR/feast-watch-mother.service" "$UNIT"
   write_manifest
 
   systemctl daemon-reload
@@ -342,11 +566,7 @@ main() {
     echo
     echo "-> starting the mother so it can mint this host's token"
     systemctl start "$UNIT_NAME"
-    if [ "$download" -eq 1 ]; then
-      install_local_agent "" "$platform" "$version"
-    else
-      install_local_agent "$(dirname "$source")" "" ""
-    fi
+    install_local_agent "$agent_source_dir" "$platform"
     echo
     if [ "$upgrading" -eq 1 ]; then
       # Same reason as the plain path below: the env file is already filled in

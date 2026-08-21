@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	motherrelease "github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/shared/release"
@@ -50,7 +51,11 @@ func (s *Store) Fetch(context.Context) (agents, mother []motherrelease.Build, no
 	}
 
 	for _, e := range entries {
-		if !e.IsDir() {
+		// Dot-directories are the catalogue's own housekeeping — the toolchain
+		// caches a build places here — not versions. They hold no assets, so
+		// they would fall out below anyway; skipping them by name says so
+		// rather than leaving it to a coincidence.
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		agentPlats, motherPlats := s.platformsOf(e.Name())

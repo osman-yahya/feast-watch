@@ -26,6 +26,7 @@ BIN="$FW_ROOT/usr/local/bin/feast-watch"
 PROMOTE="$FW_ROOT/usr/local/sbin/feast-watch-mother-promote"
 BACKUP="$BIN.bak"
 CONF_DIR="$FW_ROOT/etc/feast-watch"
+MANIFEST="$CONF_DIR/mother-manifest"
 UNIT="$FW_ROOT/etc/systemd/system/feast-watch-mother.service"
 UNIT_NAME=feast-watch-mother.service
 STATE_DIR="$FW_ROOT/var/lib/feast-watch"
@@ -62,6 +63,31 @@ stop_service() {
     systemctl disable "$UNIT_NAME" || echo "could not disable $UNIT_NAME; removing its files anyway" >&2
     say "disabled $UNIT_NAME"
   fi
+}
+
+# remove_installed_go removes a Go toolchain THIS installer put on the host, and
+# only that one.
+#
+# The manifest is what decides. mother-install.sh records `go=` when it
+# installed the toolchain and records nothing when it found one already here —
+# so a host whose Go predates feast-watch keeps it, and a host where feast-watch
+# is the only reason a compiler exists does not keep a 500MB tree nobody will
+# ever look at again.
+#
+# --purge only, like the database: the toolchain is expensive to fetch again,
+# and an operator removing the service to reinstall it should not have to.
+remove_installed_go() {
+  [ -f "$MANIFEST" ] || return 0
+  local go_root go_link
+  go_root=$(sed -n 's/^go=//p' "$MANIFEST")
+  go_link=$(sed -n 's/^go_link=//p' "$MANIFEST")
+  [ -n "$go_root" ] || return 0
+  # The manifest already carries whatever prefix the installer wrote under —
+  # empty in production, the test tree under FW_ROOT — so these are used as
+  # they are rather than prefixed a second time.
+  remove "$go_root"
+  [ -n "$go_link" ] && remove "$go_link"
+  return 0
 }
 
 # prune_conf_dir removes the shared config directory only when nothing else
@@ -118,6 +144,9 @@ main() {
   remove "$PROMOTE"
 
   if [ "$purge" -eq 1 ]; then
+    # Before the manifest is removed: it is what says whether the toolchain on
+    # this host is ours to take.
+    remove_installed_go
     remove "$STATE_DIR"
     # Only the mother's own files. An agent is expected to run on this same
     # host — the mother monitors itself — and its agent.conf lives in this very
