@@ -36,7 +36,14 @@ import (
 const stagedName = "feast-watch.new"
 
 type Config struct {
-	ReleaseBaseURL string
+	// DownloadBaseURL is where the mother fetches its OWN replacement from: its
+	// public URL, because the catalogue it compiled into is the only place a
+	// mother binary of that version exists. Going over its own HTTP surface
+	// rather than straight to the file is deliberate — the update travels the
+	// exact path the fleet's does, so if serving is broken the mother finds
+	// that out about its own update instead of being the one client that never
+	// noticed.
+	DownloadBaseURL string
 	// PromotePath is the root helper that installs a staged binary at the next
 	// start. Its absence is how a deployment says it cannot self-update.
 	PromotePath string
@@ -145,7 +152,7 @@ func (u *Updater) Tick(running string) error {
 	if err := os.MkdirAll(u.cfg.StageDir, 0o755); err != nil {
 		return u.record(err)
 	}
-	if err := sharedupdate.Place(u.client, u.cfg.ReleaseBaseURL, row.DesiredVersion, asset, u.StagedPath()); err != nil {
+	if err := sharedupdate.Place(u.client, u.cfg.DownloadBaseURL, row.DesiredVersion, asset, u.StagedPath()); err != nil {
 		return u.record(err)
 	}
 	if err := u.st.StageMotherUpdate(row.DesiredVersion); err != nil {

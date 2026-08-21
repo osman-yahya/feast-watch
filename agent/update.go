@@ -10,9 +10,9 @@ import (
 	"github.com/osman-yahya/feast-watch/shared/selfupdate"
 )
 
-// SelfUpdate downloads desiredVersion from the release host, verifies its
-// SHA-256, atomically replaces the running executable and exits 0 — the
-// service manager restarts us.
+// SelfUpdate downloads desiredVersion from the mother, verifies its SHA-256,
+// atomically replaces the running executable and exits 0 — the service manager
+// restarts us.
 func SelfUpdate(cfg Config, desiredVersion string, exit func(int)) error {
 	return SelfUpdateWithClient(cfg, desiredVersion, exit, &http.Client{Timeout: 60 * time.Second})
 }
@@ -28,19 +28,19 @@ func SelfUpdateWithClient(cfg Config, desiredVersion string, exit func(int), cli
 	return selfUpdate(cfg, desiredVersion, self, exit, client)
 }
 
-// selfUpdate fetches the build for this platform from the release host.
+// selfUpdate fetches the build for this platform from the mother.
 //
-// The binary comes from whatever RELEASE_BASE_URL names — GitHub Releases by
-// default, and the mother where it is mirroring for a fleet with no route to
-// the internet. The agent cannot tell the two apart and has no reason to: both
-// serve the same URL shape and the same published checksum, and it verifies
-// before replacing itself either way.
+// The mother is the only address an agent has. There is no release host key to
+// set and no public default to fall back to, because these agents have no route
+// off their network: the mother compiles what they run (mother/build) and serves
+// it on the same URL shape a release host used, so this is one download against
+// the host the agent was already talking to.
 //
-// Fetching straight from the release host is still the better arrangement
-// wherever it works, because it keeps binary distribution off the monitoring
-// path entirely: the mother then stores no builds, serves no bytes, and a
-// rollout cannot be blocked by the mother's disk. Mirroring is what a fleet
-// whose agents are offline by policy trades that for (mother/mirror).
+// That the mother is also the authority for the checksum is the trade this
+// arrangement makes, and it is a real one — verification here proves the
+// transfer was intact, not that somebody else agreed what the bytes should be.
+// What buys it back is that the mother is on the private network and compiled
+// the binary itself, so there is no third party in the path to disagree with.
 //
 // The transfer itself lives in shared/selfupdate, which the mother uses too.
 // What stays here is the half that is the agent's alone: it runs as root and
@@ -48,7 +48,7 @@ func SelfUpdateWithClient(cfg Config, desiredVersion string, exit func(int), cli
 // systemd's answer to exiting 0.
 func selfUpdate(cfg Config, desiredVersion, target string, exit func(int), client *http.Client) error {
 	asset := release.AssetName(runtime.GOOS, runtime.GOARCH)
-	if err := selfupdate.Place(client, cfg.releaseBaseURL(), desiredVersion, asset, target); err != nil {
+	if err := selfupdate.Place(client, cfg.MotherURL, desiredVersion, asset, target); err != nil {
 		return err
 	}
 	exit(0)

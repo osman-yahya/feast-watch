@@ -92,7 +92,7 @@ func rejectMotherVersion(ver, platform string, builds []release.Build) string {
 		}
 		return "no " + ver + " mother build for " + platform
 	}
-	return "version " + ver + " has no published release"
+	return "version " + ver + " has not been built on this mother"
 }
 
 // motherUpdateState is a projection of the stored row, computed the way

@@ -11,7 +11,8 @@ import (
 	"testing"
 )
 
-// releaseHost serves one asset and its checksum the way GitHub Releases does.
+// releaseHost serves one asset and its checksum at the URL shape the mother
+// answers — GitHub's, kept when the bytes moved home.
 func releaseHost(t *testing.T, body []byte, sum string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

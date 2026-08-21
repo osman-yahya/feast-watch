@@ -18,10 +18,10 @@ import (
 type API struct {
 	st     *store.Store
 	apiKey string
-	// releases is the mother's view of what builds exist. It is the index a
-	// rollout target is checked against, and nothing more — where the mother
-	// also mirrors the binaries themselves, that is `binaries` below and is a
-	// separate decision (see mother/mirror).
+	// releases is the mother's view of what builds exist: the catalogue it
+	// compiled into, read back. It is the index a rollout target is checked
+	// against; `binaries` below serves the same catalogue's bytes, and the two
+	// come from one directory tree so they cannot disagree.
 	releases *release.Cache
 	// publicURL is the base URL agents reach the mother on, scheme included,
 	// e.g. "http://10.0.0.1:8443". It is a whole URL rather than a host:port
@@ -34,9 +34,9 @@ type API struct {
 	// /api/live and the fleet list; nothing about it is persisted.
 	live *live.Store
 
-	// binaries is where agents download their builds from — a mirror of a
-	// published release, or this mother's own build catalogue. Nil where agents
-	// fetch from the release host themselves.
+	// binaries is where agents download their builds from: this mother's own
+	// build catalogue. Nil only where the process was wired without one, which
+	// is a mistake rather than a deployment choice — see binaries.go.
 	binaries BinarySource
 
 	// motherUpdate is the mother's own rollout, nil until SetMotherUpdate is

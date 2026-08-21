@@ -24,18 +24,16 @@ func setup(t *testing.T) (*API, *store.Store) {
 	return New(st, "adminkey", emptyReleases()), st
 }
 
-// emptyReleases is an index that has never seen a release — the state of a
-// mother that has not yet reached GitHub.
+// emptyReleases is an index with nothing in it — the state of a mother whose
+// build catalogue is still empty because nothing has been compiled on it yet.
 func emptyReleases() *release.Cache {
 	return release.NewCache(staticSource{}, time.Now)
 }
 
-// withReleases builds an index holding exactly these builds, standing in for
-// what the GitHub poller would have published.
+// withReleases builds an index holding exactly these agent builds, standing in
+// for what a read of the build catalogue would have published.
 func withReleases(builds ...release.Build) *release.Cache {
-	c := release.NewCache(staticSource{agents: builds}, time.Now)
-	c.Seed(builds)
-	return c
+	return withBothReleases(builds, nil)
 }
 
 type staticSource struct {
@@ -47,10 +45,8 @@ func (s staticSource) Fetch(context.Context) ([]release.Build, []release.Build, 
 	return s.agents, s.mother, false, nil
 }
 
-// withBothReleases publishes an index holding both families. It goes through
-// Refresh rather than Seed because Seed deliberately offers no mother builds —
-// a mother with no route to the release host cannot fetch its own replacement,
-// so seeding it a target would buy nothing but failed attempts.
+// withBothReleases publishes an index holding both families, the way one read
+// of a catalogue that holds agent and mother binaries for a version does.
 func withBothReleases(agents, mother []release.Build) *release.Cache {
 	c := release.NewCache(staticSource{agents: agents, mother: mother}, time.Now)
 	if err := c.Refresh(context.Background()); err != nil {

@@ -10,14 +10,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/osman-yahya/feast-watch/mother"
 	"github.com/osman-yahya/feast-watch/mother/api"
 	"github.com/osman-yahya/feast-watch/mother/build"
-	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/selfupdate"
 	"github.com/osman-yahya/feast-watch/mother/store"
@@ -25,10 +23,10 @@ import (
 	"github.com/osman-yahya/feast-watch/shared/version"
 )
 
-// defaultReleasePoll is how often the mother re-reads the published releases.
-// Unauthenticated GitHub allows 60 requests an hour per IP and does not count
-// a conditional request answered 304, so this costs ~12 billed requests an
-// hour in the worst case and none in the common one.
+// defaultReleasePoll is how often the mother re-reads its build catalogue.
+// A read is a scan of a handful of directories on local disk, so the interval
+// is about how soon a freshly built version appears in the panel, not about
+// what the read costs.
 const defaultReleasePoll = 5 * time.Minute
 
 // defaultMotherUpdateInterval is how often the mother checks its own rollout
@@ -71,30 +69,6 @@ func releasePollInterval() time.Duration {
 	return d
 }
 
-// seedBuilds parses FW_AGENT_VERSIONS, "v1.3.0=linux-amd64,linux-arm64;v1.4.0=linux-amd64".
-// It exists for a mother that cannot reach api.github.com; anything malformed
-// is skipped with a warning rather than refusing to start, because this is a
-// convenience input and the fetch is the real source.
-func seedBuilds(raw string) []release.Build {
-	var out []release.Build
-	for _, entry := range strings.Split(raw, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		version, platforms, ok := strings.Cut(entry, "=")
-		if !ok || strings.TrimSpace(version) == "" || strings.TrimSpace(platforms) == "" {
-			slog.Warn("FW_AGENT_VERSIONS entry ignored", "entry", entry)
-			continue
-		}
-		out = append(out, release.Build{
-			Version:   strings.TrimSpace(version),
-			Platforms: strings.Split(strings.TrimSpace(platforms), ","),
-		})
-	}
-	return out
-}
-
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -125,16 +99,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Where this mother's own builds live, when it makes its own. Read before
-	// the CLI dispatch because `feast-watch build` writes here and the server
-	// reads here, and they must agree without either being told twice.
-	// selfBuild is the whole architecture in one flag: this mother compiles the
-	// fleet's binaries and serves them, so nothing has to be built anywhere
-	// else and no artifact has to be published for it to fetch. GitHub is left
-	// holding the source, and nothing more.
-	selfBuild := os.Getenv("FW_SELF_BUILD") == "true"
+	// Where this mother's builds live. Read before the CLI dispatch because
+	// `feast-watch build` writes here and the server reads here, and the two
+	// must agree without either being told twice.
+	//
+	// Every mother compiles the fleet's binaries and serves them. That is the
+	// arrangement rather than a mode of it, because the fleet these agents run
+	// on has no route off its network: an agent that had to fetch from
+	// somewhere else would have nowhere to fetch from, and a switch for that
+	// would only be a way to configure a fleet that cannot update itself.
 	sourceDir := os.Getenv("FW_SOURCE_DIR")
-	sourceURL := env("FW_SOURCE_URL", sharedrelease.DefaultBaseURL)
+	sourceURL := env("FW_SOURCE_URL", sharedrelease.DefaultSourceRepoURL)
 	buildDir := env("FW_BUILD_DIR", filepath.Join(filepath.Dir(dbPath), "builds"))
 
 	// `feast-watch build vX.Y.Z` — compile every platform from FW_SOURCE_DIR
@@ -150,9 +125,9 @@ func main() {
 		// Where the source comes from. A directory when one is named — an
 		// operator's checkout, or a tree carried onto a host that can reach
 		// nothing — and otherwise the tag's own source archive, fetched here.
-		// That fetch is the last thing this project asks of GitHub, and it asks
-		// for source rather than binaries: what runs on the fleet is compiled
-		// on this host.
+		// That fetch is the only thing this project asks of the internet, it
+		// asks it of this host alone, and it asks for source rather than
+		// binaries: what runs on the fleet is compiled here.
 		from := sourceDir
 		if from == "" {
 			tmp, err := os.MkdirTemp("", "feast-watch-src-")
@@ -195,37 +170,22 @@ func main() {
 		slog.Error("FW_API_KEY is required")
 		os.Exit(1)
 	}
-	// The release index is the mother's whole involvement in binary
-	// distribution: it names versions, agents download them from GitHub.
-	// What versions exist, and who says so.
+	// The catalogue is both halves of what used to be a release host: the index
+	// of which versions exist, and the bytes themselves. One directory tree
+	// answers both, so the panel cannot offer a version that is not
+	// downloadable and a download cannot resolve to something the panel never
+	// listed.
 	//
-	// With FW_SOURCE_DIR this mother is the whole answer: it compiles from that
-	// tree and reads its own catalogue, and nothing here talks to GitHub — not
-	// for the bytes, not for the tag that names them. The cost is that the
-	// mother is then the only authority for what a version means; there is no
-	// published artifact left to check a build against.
-	//
-	// Without it, the index is the published releases, which is the arrangement
-	// everything else in this repository was built around.
-	var source release.Source
-	var binaries api.BinarySource
-	if selfBuild {
-		local := build.New(buildDir)
-		source, binaries = local, local
-	} else {
-		source = release.NewClient(env("FW_RELEASE_API_URL", sharedrelease.DefaultAPIBaseURL),
-			os.Getenv("FW_INCLUDE_PRERELEASES") == "true")
-	}
-	releases := release.NewCache(source, time.Now)
-	if seed := os.Getenv("FW_AGENT_VERSIONS"); seed != "" {
-		// An offline seed for a mother with no route to api.github.com. A
-		// successful fetch replaces it.
-		releases.Seed(seedBuilds(seed))
-	}
+	// The cost is named where it is paid: this mother is the only authority for
+	// what a version means. Nothing outside it computed the checksum an agent
+	// verifies against, and there is no published artifact left to compare a
+	// build with. Reproducing a version means having the same source tree.
+	catalogue := build.New(buildDir)
+	releases := release.NewCache(catalogue, time.Now)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go releases.Poll(ctx, releasePollInterval(), func(err error) {
-		slog.Error("refresh release index", "err", err)
+		slog.Error("read the build catalogue", "err", err)
 	})
 
 	// The mother's own rollout. `stop` is the same cancel the signal handler
@@ -234,41 +194,21 @@ func main() {
 	// writer of a SQLite database and has to close it cleanly.
 	promotePath := env("FW_MOTHER_PROMOTE_PATH", "/usr/local/sbin/feast-watch-mother-promote")
 	updater := selfupdate.New(st, selfupdate.Config{
-		ReleaseBaseURL: motherReleaseBaseURL(selfBuild, publicURL),
-		PromotePath:    promotePath,
-		StageDir:       env("FW_MOTHER_STAGE_DIR", filepath.Join(filepath.Dir(dbPath), "update")),
-		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
-		MaxAttempts:    motherUpdateMaxAttempts,
-		Interval:       motherUpdateInterval(),
+		DownloadBaseURL: publicURL,
+		PromotePath:     promotePath,
+		StageDir:        env("FW_MOTHER_STAGE_DIR", filepath.Join(filepath.Dir(dbPath), "update")),
+		Platform:        runtime.GOOS + "-" + runtime.GOARCH,
+		MaxAttempts:     motherUpdateMaxAttempts,
+		Interval:        motherUpdateInterval(),
 	}, &http.Client{Timeout: 60 * time.Second}, time.Now, stop)
 
 	a := api.New(st, apiKey, releases)
 	a.SetPublicURL(publicURL)
 
-	// Binary mirroring, off unless asked for.
-	//
-	// Agents fetching straight from GitHub Releases is the better arrangement
-	// wherever it works: binary distribution stays off the monitoring path, the
-	// mother stores no builds and serves no bytes, and a rollout cannot be
-	// blocked by the mother's disk. Turning that on its head is a decision
-	// somebody should have made on purpose — on a fleet whose agents have no
-	// route to the internet, a rollout they cannot fetch is not a rollout — so
-	// it is a switch rather than a default.
-	if binaries == nil && os.Getenv("FW_MIRROR_BINARIES") == "true" {
-		cacheDir := env("FW_BINARY_CACHE_DIR", filepath.Join(filepath.Dir(dbPath), "binaries"))
-		binaries = mirror.New(cacheDir,
-			env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL),
-			&http.Client{Timeout: 60 * time.Second})
-		slog.Info("mirroring release binaries for agents", "cache", cacheDir,
-			"agents_download_from", publicURL)
-	}
-	if binaries != nil {
-		a.SetBinarySource(binaries)
-		if selfBuild {
-			slog.Info("serving this mother's own builds", "catalogue", buildDir,
-				"agents_download_from", publicURL)
-		}
-	}
+	a.SetBinarySource(catalogue)
+	slog.Info("serving this mother's own builds", "catalogue", buildDir,
+		"agents_download_from", publicURL)
+
 	a.SetMotherUpdate(updater)
 	if !updater.Supported() {
 		// Said once, at boot, because the panel will show `unsupported` with
@@ -326,22 +266,4 @@ func main() {
 	}
 	slog.Error("server stopped", "err", err)
 	os.Exit(1)
-}
-
-// motherReleaseBaseURL is where the mother fetches its OWN replacement from.
-//
-// From itself, when it compiles its own builds. The catalogue is then the only
-// place a mother binary of that version exists — nothing was ever published
-// anywhere else — so pointing at the release host would offer the panel a
-// target that can only ever 404. It goes over its own HTTP surface rather than
-// straight to the file so the update travels the exact path the fleet's does:
-// if serving is broken, the mother finds that out about its own update instead
-// of being the one client that never noticed.
-//
-// From the release host otherwise, which is where its builds actually are.
-func motherReleaseBaseURL(selfBuild bool, publicURL string) string {
-	if selfBuild {
-		return publicURL
-	}
-	return env("FW_RELEASE_BASE_URL", sharedrelease.DefaultBaseURL)
 }

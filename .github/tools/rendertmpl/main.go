@@ -1,5 +1,5 @@
 // Command rendertmpl renders a Go text/template shell script with placeholder
-// data so CI can syntax-check and lint what agents actually receive. The
+// data so bin/check.sh can syntax-check and lint what agents actually receive. The
 // template is not valid shell until rendered, so linting the raw file is not
 // an option. It lives under .github/, which the go tool excludes from ./...,
 // so it never ships in a build of the mother or the agent.
@@ -11,8 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
-
-	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 func main() {
@@ -35,10 +33,9 @@ func main() {
 	}
 	defer out.Close()
 	if err := tmpl.Execute(out, map[string]any{
-		"MotherURL":      "http://127.0.0.1:8443",
-		"Token":          "tk_placeholder",
-		"ServerName":     "placeholder",
-		"ReleaseBaseURL": release.DefaultBaseURL,
+		"MotherURL":  "http://127.0.0.1:8443",
+		"Token":      "tk_placeholder",
+		"ServerName": "placeholder",
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

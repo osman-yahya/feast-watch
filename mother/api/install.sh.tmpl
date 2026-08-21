@@ -10,7 +10,6 @@ set -euo pipefail
 MOTHER_URL={{.MotherURL}}
 TOKEN={{.Token}}
 SERVER_NAME="{{.ServerName}}"
-RELEASE_BASE_URL={{.ReleaseBaseURL}}
 
 # agent_arch maps `uname -m` onto the GOARCH the release assets are named with.
 agent_arch() {
@@ -23,25 +22,26 @@ agent_arch() {
   esac
 }
 
-# download_agent fetches the newest published build for this platform from the
-# release host, and verifies it before it is allowed to become the binary.
+# download_agent fetches the newest build this mother has compiled for this
+# platform, and verifies it before it is allowed to become the binary.
 #
 # --fail is not optional: without it `curl -o` exits 0 on an HTTP 404 and writes
 # the response body, so a missing asset installs an error page as the agent,
 # chmod 0755, and the service respawns against it every 5 seconds. set -euo
 # pipefail does not catch that — curl succeeded.
 #
-# The binary comes from whatever RELEASE_BASE_URL names above: the public
-# release host by default, or the mother itself where it is mirroring for a
-# fleet whose agents have no route to the internet. This script cannot tell the
-# two apart, because both serve the same URL shape and the same checksum.
+# The binary comes from the mother, on the same URL shape a release host used.
+# It is the only address this host is asked to reach: an agent has no route off
+# this network, so a binary from anywhere else would be one it could never
+# fetch. If this 404s, nothing has been built on the mother yet — run
+# `feast-watch build <version>` there.
 download_agent() {
   local arch="$1" dest="$2"
   # This installer is bash + systemd, so the target is always Linux. The GOOS
   # is part of the asset name because releases also carry builds for other
   # operating systems, and an arch alone does not identify a runnable binary.
   local asset="feast-watch-agent-linux-$arch"
-  local url="$RELEASE_BASE_URL/releases/latest/download/$asset"
+  local url="$MOTHER_URL/releases/latest/download/$asset"
   local tmp
   tmp=$(mktemp)
   # shellcheck disable=SC2064  # expand tmp now: it must be removed on any exit

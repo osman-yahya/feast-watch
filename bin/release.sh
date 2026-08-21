@@ -5,17 +5,20 @@
 #   bin/release.sh v1.3.0              # explicit version
 #   bin/release.sh --mother-only       # just the mother, for a host being deployed
 #
-# This is a developer convenience, not the release path. Releases are built and
-# published by .github/workflows/release.yml on a tag push: agents download
-# their binaries from the GitHub release, and the mother neither stores nor
-# serves them, so there is nothing to stage on a server any more.
+# This is a developer convenience and a bootstrap, not how the fleet gets its
+# binaries. What agents run is compiled by the mother itself — `feast-watch
+# build <version>`, into the catalogue it serves (mother/build) — so nothing
+# built here ever reaches a monitored host.
 #
-# --mother-only exists because deploying a mother is the one case where the
-# agent builds are pure waste: the mother host compiles from source, and every
-# agent on the fleet — including the one beside the mother — downloads its own
-# binary from the release. Four cross-compiles and eight files, none of them
-# ever read. The flag lives here rather than in a second script so the ldflags
-# string, which is what actually has to stay right, has one home.
+# What it is still for: a first mother binary on a host that has none, and a
+# local cross-compile check.
+#
+# --mother-only exists because that first install is the one case where the
+# agent builds are pure waste: the mother compiles the fleet's agents itself,
+# and every agent — including the one beside the mother — downloads from it.
+# Four cross-compiles and eight files, none of them ever read. The flag lives
+# here rather than in a second script so the ldflags string, which is what
+# actually has to stay right, has one home.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

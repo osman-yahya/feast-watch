@@ -62,12 +62,12 @@ func newFixture(t *testing.T, body []byte, sum, promote string) (*Updater, *stor
 	st := testStore(t)
 	shutdowns := 0
 	u := New(st, Config{
-		ReleaseBaseURL: srv.URL,
-		PromotePath:    promote,
-		StageDir:       filepath.Join(t.TempDir(), "update"),
-		Platform:       "linux-amd64",
-		MaxAttempts:    3,
-		Interval:       time.Millisecond,
+		DownloadBaseURL: srv.URL,
+		PromotePath:     promote,
+		StageDir:        filepath.Join(t.TempDir(), "update"),
+		Platform:        "linux-amd64",
+		MaxAttempts:     3,
+		Interval:        time.Millisecond,
 	}, srv.Client(), func() time.Time { return time.Unix(1000, 0) }, func() { shutdowns++ })
 	return u, st, &shutdowns
 }

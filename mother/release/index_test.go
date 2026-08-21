@@ -75,8 +75,8 @@ func TestRefreshKeepsBuildsWhenNotModified(t *testing.T) {
 	}
 }
 
-// GitHub being unreachable must not erase what is known. Rolling a version
-// back is exactly when the network is least trustworthy and the list is most
+// A catalogue that could not be read must not erase what is known. Rolling a
+// version back is exactly when the least is working and the list is most
 // needed, so the last good answer is kept and flagged stale.
 func TestRefreshKeepsTheLastGoodIndexOnFailure(t *testing.T) {
 	src := &fakeSource{builds: []Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64"}}}}
@@ -121,18 +121,6 @@ func TestSnapshotDoesNotShareStorageWithTheCache(t *testing.T) {
 	}
 }
 
-// A seed list keeps a mother with no route to github.com usable: the operator
-// states what exists and the panel can still target it.
-func TestSeedBuildsAreOfferedBeforeAnyFetch(t *testing.T) {
-	c := NewCache(&fakeSource{}, at(100))
-	c.Seed([]Build{{Version: "v1.2.0", Platforms: []string{"linux-amd64"}}})
-
-	snap := c.Snapshot()
-	if len(snap.Builds) != 1 || snap.Builds[0].Version != "v1.2.0" {
-		t.Fatalf("seed not offered: %+v", snap.Builds)
-	}
-}
-
 // Both lists are replaced together: a refresh that updated one and kept the
 // other would let the panel offer a mother version from a release list that no
 // longer describes what is published.
@@ -168,21 +156,5 @@ func TestSnapshotDoesNotShareMotherStorageWithTheCache(t *testing.T) {
 	first.Mother[0].Platforms[0] = "tampered"
 	if c.Snapshot().Mother[0].Platforms[0] != "linux-amd64" {
 		t.Fatal("Snapshot handed out the cache's own slice")
-	}
-}
-
-// A mother that cannot reach the release host cannot download its own
-// replacement either, so seeding it a target would only produce a bounded run
-// of failed attempts.
-func TestSeedOffersNoMotherBuilds(t *testing.T) {
-	c := NewCache(&fakeSource{}, at(100))
-	c.Seed([]Build{{Version: "v1.4.0", Platforms: []string{"linux-amd64"}}})
-
-	snap := c.Snapshot()
-	if len(snap.Builds) != 1 {
-		t.Fatalf("the seeded agent builds must be offered: %+v", snap)
-	}
-	if len(snap.Mother) != 0 {
-		t.Fatalf("a seed must not offer the mother a target it cannot fetch: %+v", snap.Mother)
 	}
 }

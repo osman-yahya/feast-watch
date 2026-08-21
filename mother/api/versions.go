@@ -13,9 +13,9 @@ import (
 	"github.com/osman-yahya/feast-watch/shared/version"
 )
 
-// latestAlias is GitHub's moving pointer at the newest release. The installer
-// uses it, but it is never a rollout target: an agent can never *be* "latest",
-// so it would re-download and restart on every push, forever.
+// latestAlias is the moving pointer at the newest build the mother holds. The
+// installer uses it, but it is never a rollout target: an agent can never *be*
+// "latest", so it would re-download and restart on every push, forever.
 const latestAlias = "latest"
 
 type versionView struct {
@@ -124,8 +124,8 @@ func (a *API) handleSetServerVersion(w http.ResponseWriter, r *http.Request) {
 // group checks every member against one snapshot instead of re-reading per
 // server — and so the rule itself stays a pure function.
 //
-// Validating here rather than trusting the caller matters: an unpublished
-// version makes every agent push retry a download that 404s, with the failure
+// Validating here rather than trusting the caller matters: a version nobody
+// built makes every agent push retry a download that 404s, with the failure
 // visible only in the agent's own logs until it reports the error back.
 func rejectVersion(srv store.Server, ver string, builds []release.Build) string {
 	if ver == latestAlias {
@@ -149,5 +149,5 @@ func rejectVersion(srv store.Server, ver string, builds []release.Build) string 
 		}
 		return "no " + ver + " build for " + want
 	}
-	return "version " + ver + " has no published release"
+	return "version " + ver + " has not been built on this mother"
 }
