@@ -77,6 +77,16 @@ func env(key, fallback string) string {
 }
 
 func main() {
+	// The deployment's own configuration, for the runs systemd did not start.
+	// Under the unit this changes nothing — EnvironmentFile= has already set
+	// every key and set values are never replaced — but `feast-watch build`
+	// typed by an operator otherwise saw none of it, and would fetch source
+	// over the network on a host whose env file names a checkout.
+	if err := mother.LoadEnvFile(env("FW_ENV_FILE", mother.DefaultEnvFile)); err != nil {
+		slog.Error("read the mother's env file", "err", err)
+		os.Exit(1)
+	}
+
 	dbPath := env("FW_DB_PATH", "/var/lib/feast-watch/mother.db")
 	st, err := store.Open(dbPath)
 	if err != nil {

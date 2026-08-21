@@ -121,6 +121,23 @@ run_ensure_go "$FIXTURE_SUM" "$BIN/ancient" >/dev/null || fail "ensure_go failed
   fail "a Go older than the tree's own go.mod line was accepted; the build would fail with syntax errors"
 pass "an unusable toolchain is replaced"
 
+step "4b. a Go one patch short is replaced, not accepted"
+# The trap this catches: go.mod pins a patch (go 1.26.1), a host one patch short
+# passes any major.minor test, and then EVERY build reaches over the network for
+# the matching toolchain — on the mother this is written for, the one thing that
+# must not be needed.
+rm -rf "${ROOT:?}/usr"
+mkdir -p "$BIN/one-short"
+cat > "$BIN/one-short/go" <<'EOF'
+#!/usr/bin/env bash
+echo "go version go1.26.0 linux/amd64"
+EOF
+chmod 0755 "$BIN/one-short/go"
+run_ensure_go "$FIXTURE_SUM" "$BIN/one-short" >/dev/null || fail "ensure_go failed against a one-patch-short toolchain"
+[ -x "$ROOT/usr/local/go/bin/go" ] ||
+  fail "go1.26.0 was accepted against a go.mod that pins 1.26.1; every build would fetch a toolchain"
+pass "the patch level is compared, not just major.minor"
+
 step "5. an architecture with no pinned toolchain is named, not guessed"
 out=$(FW_ROOT="$ROOT" PATH="$BASE_PATH" bash -c '
   set -euo pipefail

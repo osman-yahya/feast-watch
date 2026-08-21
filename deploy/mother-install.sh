@@ -88,11 +88,14 @@ GO_DL_BASE="${GO_DL_BASE:-https://go.dev/dl}"
 GO_ROOT="$FW_ROOT/usr/local/go"
 GO_LINK="$FW_ROOT/usr/local/bin/go"
 
-# GO_MIN_MINOR is the oldest Go that can build this tree — the `go` line in
-# go.mod. An existing toolchain at least this new is used as it is; anything
-# older is not, because the compiler's own error for a too-new language version
-# arrives as a wall of syntax errors rather than as a version complaint.
-GO_MIN_MINOR=26
+# GO_MIN is the oldest Go that can build this tree: the `go` line in go.mod,
+# patch included. An existing toolchain at least this new is used as it is.
+#
+# The patch matters. A host one patch short passes any major.minor test, and
+# then every build silently reaches for the matching toolchain over the network
+# — which on the mother this is written for is the one thing that must not be
+# needed. Update this with go.mod.
+GO_MIN=1.26.1
 
 # GO_INSTALLED records whether the toolchain on this host is one we put there.
 # The manifest carries it, so the uninstaller removes a compiler this installer
@@ -161,21 +164,31 @@ fetch_release_binary() {
   install -m 0755 "$tmp" "$dest"
 }
 
+# version_at_least compares two "1.26.7" triples numerically. Field by field
+# rather than with sort -V, which is not on every host this may run on, and
+# never as strings: "1.9" above "1.26" is exactly the comparison that would wave
+# through a toolchain three years too old.
+version_at_least() {
+  local have="$1" want="$2" i h w
+  for i in 1 2 3; do
+    h=$(echo "$have" | cut -d. -f$i); w=$(echo "$want" | cut -d. -f$i)
+    h=${h:-0}; w=${w:-0}
+    case "$h$w" in *[!0-9]*) return 1 ;; esac
+    [ "$h" -gt "$w" ] && return 0
+    [ "$h" -lt "$w" ] && return 1
+  done
+  return 0
+}
+
 # go_new_enough reports whether this Go can build the tree. `go version` prints
-# "go version go1.26.7 linux/amd64"; only the major and minor decide.
+# "go version go1.26.7 linux/amd64".
 go_new_enough() {
-  local raw major rest minor
+  local raw
   raw=$("$1" version 2>/dev/null) || return 1
   raw=${raw#go version go}
   raw=${raw%% *}
-  major=${raw%%.*}
-  rest=${raw#*.}
-  minor=${rest%%.*}
-  case "$major$minor" in
-    *[!0-9]*|"") return 1 ;;
-  esac
-  [ "$major" -gt 1 ] && return 0
-  [ "$major" -eq 1 ] && [ "$minor" -ge "$GO_MIN_MINOR" ]
+  [ -n "$raw" ] || return 1
+  version_at_least "$raw" "$GO_MIN"
 }
 
 # usable_go prints the path of a Go new enough to build this project, if the
@@ -204,7 +217,7 @@ usable_go() {
 install_go() {
   local platform="$1" want got url tmp
   want=$(go_sha256 "$platform") || {
-    echo "no pinned Go build for $platform — install a Go >= 1.$GO_MIN_MINOR by hand, then re-run with --skip-go" >&2
+    echo "no pinned Go build for $platform — install a Go >= $GO_MIN by hand, then re-run with --skip-go" >&2
     return 1
   }
   url="$GO_DL_BASE/go$GO_VERSION.$platform.tar.gz"

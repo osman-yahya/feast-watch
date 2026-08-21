@@ -41,9 +41,7 @@ mother's build catalogue, and the settings payload rules:
 1. Cut a version:
 
    ```bash
-   sudo -u feast-watch \
-     FW_DB_PATH=/var/lib/feast-watch/mother.db \
-     feast-watch build v1.3.0
+   sudo -u feast-watch feast-watch build v1.3.0
    ```
 
    The mother fetches that tag's source archive, compiles every platform — four agent builds
@@ -52,6 +50,11 @@ mother's build catalogue, and the settings payload rules:
    that needs a Go toolchain on this host, and the price of answering to nothing
    outside it.
 
+   `FW_SOURCE_DIR`, `FW_BUILD_DIR` and the rest are read from
+   `/etc/feast-watch/mother.env` — the same file the unit runs on — so a build
+   typed by hand sees the deployment's own configuration. Anything named on the
+   command line still wins, and `FW_ENV_FILE` points elsewhere.
+
    The toolchain itself comes with the installer — `deploy/mother-install.sh`
    downloads the pinned Go, verifies its published SHA-256, unpacks it into
    `/usr/local/go` and links it as `/usr/local/bin/go`. A host that already has
@@ -59,17 +62,15 @@ mother's build catalogue, and the settings payload rules:
    `mother-uninstall.sh --purge` removes only a toolchain the installer put
    there (it records `go=` in the manifest to tell the two apart).
 
-   Run it as the service account, as above. The toolchain's caches go beside the
-   catalogue when the environment names none, so this works despite
-   `feast-watch` having no home directory — which the unit wants and the Go
-   toolchain otherwise refuses to compile without. Where the caches should live
+   Run it as the service account, as above. GOCACHE, GOMODCACHE, GOPATH and HOME
+   all go beside the catalogue when the environment names none, so this works
+   despite `feast-watch` having no home directory — which the unit wants, and
+   which the Go toolchain otherwise refuses to compile without. Where the caches should live
    somewhere else, or have been seeded by hand on a host with no egress, name
    them and they are used as given:
 
    ```bash
-   sudo -u feast-watch \
-     FW_DB_PATH=/var/lib/feast-watch/mother.db \
-     GOMODCACHE=/var/lib/feast-watch/gomod \
+   sudo -u feast-watch GOMODCACHE=/var/lib/feast-watch/gomod \
      feast-watch build v1.3.0
    ```
 

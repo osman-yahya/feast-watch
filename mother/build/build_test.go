@@ -200,6 +200,9 @@ func TestBuildSuppliesItsOwnToolchainCaches(t *testing.T) {
 // `feast-watch build` needs no network — the whole point on an air-gapped
 // mother — must not have the build quietly compile against an empty one it made
 // itself.
+//
+// Per variable, not all-or-nothing: GOPATH and GOMODCACHE are independent, and
+// a host that names one and not the other should get exactly what it asked for.
 func TestBuildKeepsTheCachesTheEnvironmentNames(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "builds")
 	named := t.TempDir()
@@ -213,8 +216,10 @@ func TestBuildKeepsTheCachesTheEnvironmentNames(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(named, "build")); err != nil {
 		t.Fatalf("the named GOCACHE went unused: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(out, toolchainCacheDir)); !os.IsNotExist(err) {
-		t.Fatalf("a cache was placed beside the catalogue despite the environment naming one: %v", err)
+	for _, sub := range []string{"build", "mod"} {
+		if _, err := os.Stat(filepath.Join(out, toolchainCacheDir, sub)); !os.IsNotExist(err) {
+			t.Fatalf("%s was placed beside the catalogue despite the environment naming one: %v", sub, err)
+		}
 	}
 }
 
@@ -230,5 +235,62 @@ func TestBuildNamesAMissingToolchain(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Go toolchain") {
 		t.Fatalf("the error does not name what is missing: %v", err)
+	}
+}
+
+// The source tree the mother builds from is a checkout somebody else owns —
+// root's, typically, while the build runs as the service account. Go's VCS
+// stamping runs `git` in that tree, git refuses to work in a repository owned
+// by another user, and the build dies at the last step of the last target,
+// after every module has been downloaded, with an error that never mentions
+// ownership.
+func TestBuildDoesNotStampVCS(t *testing.T) {
+	args := buildArgs("/out/feast-watch-agent-linux-amd64", "v1.1.0", "./agent/cmd/feast-watch-agent")
+
+	var sawVCS, sawVersion bool
+	for i, a := range args {
+		if a == "-buildvcs=false" {
+			sawVCS = true
+		}
+		if a == "-ldflags" && i+1 < len(args) && strings.Contains(args[i+1], "version.Version=v1.1.0") {
+			sawVersion = true
+		}
+	}
+	if !sawVCS {
+		t.Fatalf("a build in somebody else's checkout will fail on git: %v", args)
+	}
+	if !sawVersion {
+		t.Fatalf("the version is not linked in; every binary would report dev: %v", args)
+	}
+}
+
+// Every directory the toolchain might write to is named, not just the two
+// caches. A Go older than the `go` line in go.mod downloads the matching
+// toolchain and writes its checksum-database cache under GOPATH — which
+// defaults into a home directory the service account does not have, so the
+// build fails on a path nobody configured.
+func TestToolchainEnvNamesEveryWritableDirectory(t *testing.T) {
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "GOPATH", "HOME"} {
+		t.Setenv(key, "")
+	}
+	out := filepath.Join(t.TempDir(), "builds")
+
+	env, err := toolchainEnv(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "GOPATH", "HOME"} {
+		var found string
+		for _, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				found = strings.TrimPrefix(kv, key+"=")
+			}
+		}
+		if found == "" {
+			t.Fatalf("%s is left to the environment: %v", key, env)
+		}
+		if _, err := os.Stat(found); err != nil {
+			t.Fatalf("%s names %s, which was not created: %v", key, found, err)
+		}
 	}
 }
