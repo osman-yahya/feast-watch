@@ -139,6 +139,16 @@ func toolchainEnv(outDir string) ([]string, error) {
 	for _, cache := range []struct{ key, sub string }{
 		{"GOCACHE", "build"},
 		{"GOMODCACHE", "mod"},
+		// GOPATH is not dead here. When the host's Go is older than the `go`
+		// line in go.mod it downloads the matching toolchain, and that path
+		// writes its checksum-database cache under GOPATH/pkg — which defaults
+		// to $HOME/go, the directory this account does not have.
+		{"GOPATH", "gopath"},
+		// And HOME last, for anything that still looks there. Every specific
+		// variable above is set, so this is a backstop rather than the
+		// mechanism — but the failure it prevents is the whole build dying on a
+		// path nobody named.
+		{"HOME", "home"},
 	} {
 		if os.Getenv(cache.key) != "" {
 			continue
@@ -152,15 +162,32 @@ func toolchainEnv(outDir string) ([]string, error) {
 	return env, nil
 }
 
+// buildArgs is the command line one target is compiled with. Separated from
+// running it so the flags — which are what actually has to stay right — can be
+// asserted without a toolchain and a source tree.
+func buildArgs(out, version, pkg string) []string {
+	return []string{
+		"build",
+		// The version has to be linked in or the binary reports "dev" forever
+		// and no agent can satisfy a rollout target.
+		"-ldflags", "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=" + version,
+		// VCS stamping off. It would record the commit a build came from, which
+		// is worth something — but it runs `git` inside the source tree, as the
+		// mother's service account, against a checkout somebody else owns.
+		// Git refuses that ("dubious ownership") and the build dies at the very
+		// last step, after every module has been downloaded, with an error that
+		// says nothing about ownership. The version this project cares about is
+		// the one stamped above, not the one git would have added.
+		"-buildvcs=false",
+		"-o", out, pkg,
+	}
+}
+
 func compile(sourceDir, staging, version string, t target, toolchain []string) error {
 	out := filepath.Join(staging, t.asset)
-	// The same flags the release pipeline used, for the same reasons: the
-	// version has to be linked in or the binary reports "dev" forever and no
-	// agent can satisfy a rollout target, and CGO off is what makes one build
-	// run on every distribution the fleet happens to use.
-	cmd := exec.Command("go", "build",
-		"-ldflags", "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version="+version,
-		"-o", out, t.pkg)
+	// CGO off is what makes one build run on every distribution the fleet
+	// happens to use.
+	cmd := exec.Command("go", buildArgs(out, version, t.pkg)...)
 	cmd.Dir = sourceDir
 	// A new slice per target rather than one appended to across the loop: they
 	// differ only in GOOS/GOARCH, and sharing the backing array is how two
