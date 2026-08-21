@@ -2,8 +2,10 @@
 //
 // The agents originally downloaded from GitHub Releases, and then through the
 // mother mirroring those releases. Both put GitHub in the path: one for the
-// bytes, the other for the tag that names them. This removes it entirely — the
-// mother compiles from a source tree on its own host and serves what it made.
+// bytes, the other for the tag that names them. Neither survives contact with
+// the fleet this runs on, whose agents have no route off their network at all.
+// So the mother compiles from a source tree on its own host and serves what it
+// made, and the agents ask nothing but their mother.
 //
 // What that costs is worth stating where it is implemented rather than only in
 // a design note. The mother's host now needs a Go toolchain and a copy of the
@@ -93,15 +95,64 @@ func Build(sourceDir, outDir, version string) error {
 	// Removed on every path but the successful rename below.
 	defer os.RemoveAll(staging)
 
+	// Checked once, before anything is staged. Without it the first target
+	// fails with exec's own wording — `exec: "go": executable file not found in
+	// $PATH` — wrapped in a message about building an asset, which reads like
+	// the source tree is at fault rather than the host.
+	if _, err := exec.LookPath("go"); err != nil {
+		return fmt.Errorf("no Go toolchain on this host: the mother compiles what its fleet runs, " +
+			"so it needs one — deploy/mother-install.sh installs it, or install Go and put it on PATH")
+	}
+
+	toolchain, err := toolchainEnv(outDir)
+	if err != nil {
+		return err
+	}
 	for _, t := range targets() {
-		if err := compile(sourceDir, staging, version, t); err != nil {
+		if err := compile(sourceDir, staging, version, t, toolchain); err != nil {
 			return err
 		}
 	}
 	return os.Rename(staging, final)
 }
 
-func compile(sourceDir, staging, version string, t target) error {
+// toolchainCacheDir is where the Go toolchain's own caches go when the
+// environment names none. Beside the catalogue, so it lands in the state
+// directory the mother's unit already creates and owns.
+const toolchainCacheDir = ".toolchain-cache"
+
+// toolchainEnv gives the compiler somewhere to keep its caches.
+//
+// The mother's service account has no home directory — `useradd
+// --no-create-home`, which is what an account that only runs a daemon should
+// have — and the Go toolchain refuses to compile anything at all without one:
+// it cannot place its build cache and stops before reading a single file. So
+// the caches are named explicitly, and a build stops depending on a directory
+// nobody meant to create.
+//
+// Anything the environment already names is left alone. An air-gapped mother
+// gets its modules by having $GOMODCACHE seeded by hand, and overriding that
+// would replace a populated cache with an empty one and turn a working build
+// into a failed download.
+func toolchainEnv(outDir string) ([]string, error) {
+	env := []string{"CGO_ENABLED=0"}
+	for _, cache := range []struct{ key, sub string }{
+		{"GOCACHE", "build"},
+		{"GOMODCACHE", "mod"},
+	} {
+		if os.Getenv(cache.key) != "" {
+			continue
+		}
+		dir := filepath.Join(outDir, toolchainCacheDir, cache.sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("preparing %s: %w", cache.key, err)
+		}
+		env = append(env, cache.key+"="+dir)
+	}
+	return env, nil
+}
+
+func compile(sourceDir, staging, version string, t target, toolchain []string) error {
 	out := filepath.Join(staging, t.asset)
 	// The same flags the release pipeline used, for the same reasons: the
 	// version has to be linked in or the binary reports "dev" forever and no
@@ -111,8 +162,11 @@ func compile(sourceDir, staging, version string, t target) error {
 		"-ldflags", "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version="+version,
 		"-o", out, t.pkg)
 	cmd.Dir = sourceDir
-	cmd.Env = append(os.Environ(),
-		"GOOS="+t.goos, "GOARCH="+t.goarch, "CGO_ENABLED=0")
+	// A new slice per target rather than one appended to across the loop: they
+	// differ only in GOOS/GOARCH, and sharing the backing array is how two
+	// targets end up compiled for the same platform.
+	cmd.Env = append(append(append([]string{}, os.Environ()...), toolchain...),
+		"GOOS="+t.goos, "GOARCH="+t.goarch)
 
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s: %w: %s", t.asset, err, strings.TrimSpace(string(combined)))

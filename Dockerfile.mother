@@ -2,6 +2,13 @@ FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
 
+# Every module the tree needs, not just the mother's. The runtime stage copies
+# this cache so a build inside the container reaches nothing — and the agent's
+# dependencies (gopsutil, pgx) are exactly the ones building only the mother
+# would leave out, which shows up later as an offline mother that can compile
+# itself and nothing for its fleet.
+RUN go mod download all
+
 # The version has to be linked in the same way bin/release.sh and the release
 # workflow do it, or the binary reports the "dev" default forever: the panel
 # then shows "Mother sürümü: dev" with nothing to compare agents against.
@@ -20,6 +27,27 @@ RUN CGO_ENABLED=0 go build \
       -ldflags "-s -w -X github.com/osman-yahya/feast-watch/shared/version.Version=${VERSION}" \
       -o /out/feast-watch ./mother/cmd/feast-watch
 
-FROM alpine:3.20
+# The runtime image carries the Go toolchain and the source, because the mother
+# compiles the binaries its fleet runs — `feast-watch build <version>` is run on
+# this host and nowhere else. A scratch or alpine image would be smaller and
+# could not do the one thing this process exists to make possible: hand an agent
+# with no route to the internet a binary to become.
+#
+# FW_SOURCE_DIR points at the tree copied in below, so a build inside this
+# container fetches nothing at all.
+FROM golang:1.26-alpine
+WORKDIR /src
+COPY . .
+ENV FW_SOURCE_DIR=/src
+# The module cache comes with it. Without it the first `feast-watch build` in
+# this container would reach proxy.golang.org — which is the one thing this
+# arrangement is for not doing, and on an air-gapped host it would simply fail.
+#
+# Named explicitly rather than left to the toolchain's default: a build that
+# finds no cache named in its environment makes one beside the catalogue
+# (mother/build.toolchainEnv), which here would mean ignoring the very cache
+# this image carries and downloading anyway.
+ENV GOMODCACHE=/go/pkg/mod GOCACHE=/root/.cache/go-build
+COPY --from=build /go/pkg/mod /go/pkg/mod
 COPY --from=build /out/feast-watch /usr/local/bin/feast-watch
 ENTRYPOINT ["feast-watch"]

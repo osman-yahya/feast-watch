@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 type Config struct {
@@ -31,20 +29,6 @@ type Config struct {
 	// DefaultUninstaller — the path the installer writes it to. It is a key
 	// only so a differently-packaged host (or a test) can point elsewhere.
 	UninstallCmd string
-
-	// ReleaseBaseURL is where agent binaries are downloaded from. It defaults
-	// to the public repository (release.DefaultBaseURL) and exists as a key
-	// only so tests and an internal mirror can point somewhere else — the
-	// mother never supplies it, because the mother is not in the binary path.
-	ReleaseBaseURL string
-}
-
-// releaseBaseURL is the configured release host, or the public default.
-func (c Config) releaseBaseURL() string {
-	if c.ReleaseBaseURL != "" {
-		return c.ReleaseBaseURL
-	}
-	return release.DefaultBaseURL
 }
 
 // LoadConfig reads KEY=VALUE lines ('#' comments allowed) and validates
@@ -83,7 +67,6 @@ func LoadConfig(path string) (Config, error) {
 		PostgresDSN:      kv["POSTGRES_DSN"],
 		K8sAPIURL:        kv["K8S_API_URL"],
 		K8sToken:         kv["K8S_TOKEN"],
-		ReleaseBaseURL:   kv["RELEASE_BASE_URL"],
 		UninstallCmd:     kv["UNINSTALL_CMD"],
 	}
 	if raw := kv["CENTRIFUGO_CONNS_MAX"]; raw != "" {
@@ -104,11 +87,6 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if err := validateMotherURL(cfg.MotherURL); err != nil {
 		return Config{}, err
-	}
-	if cfg.ReleaseBaseURL != "" {
-		if err := validateURL("RELEASE_BASE_URL", cfg.ReleaseBaseURL); err != nil {
-			return Config{}, err
-		}
 	}
 	return cfg, nil
 }

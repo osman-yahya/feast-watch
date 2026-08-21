@@ -14,12 +14,12 @@ import (
 )
 
 // publish makes these builds the mother's release index, standing in for what
-// the GitHub poller would have found. Which releases qualify as a build — a
-// published, non-draft release carrying both a binary and its checksum — is
-// decided and tested in mother/release; here the index is a given.
+// a read of the build catalogue would have found. Which directories qualify as
+// a build — one holding a binary and the checksum beside it — is decided and
+// tested in mother/build; here the index is a given.
 func publish(t *testing.T, a *API, builds ...release.Build) {
 	t.Helper()
-	a.releases.Seed(builds)
+	a.releases = withReleases(builds...)
 }
 
 // build is a shorthand for one published version and the platforms it covers.
@@ -149,7 +149,7 @@ func TestSetServerVersionRejectsAnUnpublishedVersion(t *testing.T) {
 	w := adminReq(t, a.Handler(), http.MethodPut,
 		fmt.Sprintf("/api/servers/%d/version", srv.ID), `{"version":"v9.9.9"}`)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for a version with no published release, got %d: %s", w.Code, w.Body)
+		t.Fatalf("want 400 for a version nobody built, got %d: %s", w.Code, w.Body)
 	}
 	got, _ := st.ServerByID(srv.ID)
 	if got.DesiredVersion != "" {

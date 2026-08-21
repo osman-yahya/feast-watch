@@ -1,15 +1,47 @@
+// Package release keeps the mother's view of what builds exist — the agents'
+// and its own.
+//
+// The list used to be read from the GitHub API. It is now read from the
+// catalogue the mother compiled into (mother/build), because the mother builds
+// everything its fleet runs and nothing is published anywhere else. What stays
+// is the shape: an immutable snapshot, so naming a rollout target is a check
+// against what is actually downloadable rather than against a version somebody
+// remembers building.
 package release
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
 
-// Source is what the cache reads from; the GitHub Client implements it. The
-// two families come back apart rather than tagged in one list — see Build.
+// Source is what the cache reads from; mother/build.Store is the implementation
+// and, since the mother stopped asking anything else what versions exist, the
+// only one. The interface is kept because it is what lets the cache be tested
+// without a filesystem. The two families come back apart rather than tagged in
+// one list — see Build.
 type Source interface {
 	Fetch(context.Context) (agents, mother []Build, notModified bool, err error)
+}
+
+// Build is one downloadable version and the platforms it was built for. The
+// family it belongs to is carried by which list it is in, not by a field: every
+// consumer wants exactly one of them, and a Kind field would move the
+// separation to each call site instead of settling it here.
+type Build struct {
+	Version   string   `json:"version"`
+	Platforms []string `json:"platforms"`
+}
+
+// SortDescending puts the newest version first, which is the order a rollout
+// dropdown reads in. Exported because the build catalogue orders its own list
+// with it, and a second comparator is how two lists begin disagreeing about
+// which build is newest.
+func SortDescending(builds []Build) {
+	sort.Slice(builds, func(i, j int) bool {
+		return naturalLess(builds[j].Version, builds[i].Version)
+	})
 }
 
 // Snapshot is an immutable view of the release index, safe to hand to a
@@ -47,22 +79,9 @@ func NewCache(src Source, now func() time.Time) *Cache {
 	}
 }
 
-// Seed publishes an agent build list supplied by configuration, so a mother
-// with no route to github.com can still roll agents out. A successful fetch
-// replaces it.
-//
-// It seeds no mother builds, deliberately. A mother that cannot reach the
-// release host cannot download its own replacement either, so offering itself
-// a target would buy nothing but a bounded run of failed attempts.
-func (c *Cache) Seed(builds []Build) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.snap = Snapshot{Builds: cloneBuilds(builds), Mother: []Build{}, CheckedAt: c.now(), Stale: false}
-}
-
 // Refresh reads the source and republishes. A failure is returned to the
-// caller and marks the snapshot stale, but never empties it: GitHub being
-// unreachable is exactly when an operator most needs the list they had.
+// caller and marks the snapshot stale, but never empties it: a catalogue that
+// could not be read is exactly when an operator most needs the list they had.
 func (c *Cache) Refresh(ctx context.Context) error {
 	agents, mother, notModified, err := c.src.Fetch(ctx)
 

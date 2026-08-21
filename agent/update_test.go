@@ -18,13 +18,14 @@ import (
 )
 
 // assetPath is where a correctly built agent looks for its own replacement on
-// the release host: the tag, then the platform-keyed asset name.
+// its mother: the tag, then the platform-keyed asset name.
 func assetPath(tag string) string {
 	return "/releases/download/" + tag + "/" + release.AssetName(runtime.GOOS, runtime.GOARCH)
 }
 
-// releaseServer stands in for github.com, serving one tagged release.
-func releaseServer(t *testing.T, tag string, binary []byte, sum string) *httptest.Server {
+// motherServer stands in for the mother, serving one version out of its build
+// catalogue.
+func motherServer(t *testing.T, tag string, binary []byte, sum string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -43,13 +44,15 @@ func sum(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-func updateConfig(baseURL string) Config {
-	return Config{MotherURL: "http://mother.invalid", ReleaseBaseURL: baseURL}
+// updateConfig is the whole of an agent's knowledge of where binaries live:
+// the mother's URL, and nothing beside it to point anywhere else.
+func updateConfig(motherURL string) Config {
+	return Config{MotherURL: motherURL}
 }
 
 func TestSelfUpdateReplacesBinaryAndExits(t *testing.T) {
 	binary := []byte("NEW BINARY")
-	srv := releaseServer(t, "v1.3.0", binary, sum(binary))
+	srv := motherServer(t, "v1.3.0", binary, sum(binary))
 	defer srv.Close()
 
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")
@@ -77,34 +80,52 @@ func TestSelfUpdateReplacesBinaryAndExits(t *testing.T) {
 	}
 }
 
-// The binary is downloaded from the release host, never from the mother. The
-// mother only ever names a version.
-func TestSelfUpdateNeverTouchesTheMother(t *testing.T) {
+// Every byte of an update comes from the mother, because that is the only host
+// an agent can reach. This asserts the whole of the request path: nothing is
+// fetched from anywhere but MOTHER_URL, and what is fetched from it is the
+// binary and its checksum under the tag that was asked for.
+func TestSelfUpdateDownloadsOnlyFromTheMother(t *testing.T) {
 	binary := []byte("NEW BINARY")
-	srv := releaseServer(t, "v1.3.0", binary, sum(binary))
-	defer srv.Close()
-
-	var motherHits int
+	var got []string
 	mother := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		motherHits++
-		http.NotFound(w, r)
+		got = append(got, r.URL.Path)
+		switch r.URL.Path {
+		case assetPath("v1.3.0"):
+			w.Write(binary)
+		case assetPath("v1.3.0") + release.ChecksumSuffix:
+			fmt.Fprintln(w, sum(binary))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer mother.Close()
 
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")
 	os.WriteFile(target, []byte("OLD"), 0o755)
 
-	cfg := Config{MotherURL: mother.URL, ReleaseBaseURL: srv.URL}
-	if err := selfUpdate(cfg, "v1.3.0", target, func(int) {}, srv.Client()); err != nil {
+	if err := selfUpdate(updateConfig(mother.URL), "v1.3.0", target, func(int) {}, mother.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if motherHits != 0 {
-		t.Fatalf("the mother was asked for the binary %d times", motherHits)
+	// The set rather than the order: which of the two is fetched first is
+	// shared/selfupdate's business, and pinning it here would break that
+	// package's freedom to reorder without telling us anything about where the
+	// bytes came from.
+	want := map[string]bool{
+		assetPath("v1.3.0"):                          true,
+		assetPath("v1.3.0") + release.ChecksumSuffix: true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the mother was asked for %v, want exactly the binary and its checksum", got)
+	}
+	for _, path := range got {
+		if !want[path] {
+			t.Fatalf("unexpected request to the mother: %q", path)
+		}
 	}
 }
 
 func TestSelfUpdateRefusesOnChecksumMismatch(t *testing.T) {
-	srv := releaseServer(t, "v1.3.0", []byte("TAMPERED"), sum([]byte("EXPECTED")))
+	srv := motherServer(t, "v1.3.0", []byte("TAMPERED"), sum([]byte("EXPECTED")))
 	defer srv.Close()
 
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")
@@ -124,10 +145,11 @@ func TestSelfUpdateRefusesOnChecksumMismatch(t *testing.T) {
 	}
 }
 
-// A tag with no asset for this platform, or no release at all, is a 404. It
-// must surface as an error the mother can display, not as a corrupt install.
+// A tag with no asset for this platform, or one never built on the mother at
+// all, is a 404. It must surface as an error the mother can display, not as a
+// corrupt install.
 func TestSelfUpdateFailsOnMissingRelease(t *testing.T) {
-	srv := releaseServer(t, "v1.3.0", []byte("X"), sum([]byte("X")))
+	srv := motherServer(t, "v1.3.0", []byte("X"), sum([]byte("X")))
 	defer srv.Close()
 
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")
@@ -142,9 +164,10 @@ func TestSelfUpdateFailsOnMissingRelease(t *testing.T) {
 	}
 }
 
-// GitHub answers a release download with a 404 HTML page when the asset is
-// absent. Treating that body as a digest would report "checksum mismatch" for
-// what is really a missing asset, sending the operator after the wrong fault.
+// A proxy or a misrouted request can answer with an HTML error page instead of
+// a checksum. Treating that body as a digest would report "checksum mismatch"
+// for what is really a missing asset, sending the operator after the wrong
+// fault.
 func TestSelfUpdateRejectsANonDigestChecksumBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "<!DOCTYPE html><html>Not Found</html>")
@@ -163,7 +186,7 @@ func TestSelfUpdateRejectsANonDigestChecksumBody(t *testing.T) {
 // A failed update must leave nothing behind: a stranded .new file is never
 // swept by anything and accumulates on every retry.
 func TestSelfUpdateLeavesNoTemporaryFileBehind(t *testing.T) {
-	srv := releaseServer(t, "v1.3.0", []byte("TAMPERED"), sum([]byte("EXPECTED")))
+	srv := motherServer(t, "v1.3.0", []byte("TAMPERED"), sum([]byte("EXPECTED")))
 	defer srv.Close()
 
 	dir := t.TempDir()
@@ -190,7 +213,7 @@ func TestSelfUpdateLeavesNoTemporaryFileBehind(t *testing.T) {
 // agent runs on the hosts it monitors, some of which are small.
 func TestSelfUpdateRefusesAnOversizedAsset(t *testing.T) {
 	huge := make([]byte, selfupdate.MaxBinarySize+1)
-	srv := releaseServer(t, "v1.3.0", huge, sum(huge))
+	srv := motherServer(t, "v1.3.0", huge, sum(huge))
 	defer srv.Close()
 
 	target := filepath.Join(t.TempDir(), "feast-watch-agent")

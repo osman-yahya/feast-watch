@@ -4,6 +4,7 @@
 # build output.
 /bin/*
 !/bin/release.sh
+!/bin/check.sh
 /certs/
 *.db
 *.pem

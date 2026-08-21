@@ -11,8 +11,14 @@ services:
     environment:
       FW_DB_PATH: /data/mother.db
       FW_LISTEN: ":8443"
+      # Agents download their binaries from this address as well as pushing to
+      # it — it is the only host they have. In this rig they resolve `mother`
+      # on the compose network; on a real fleet it is the mother's LAN address.
       FW_PUBLIC_URL: "http://mother:8443"
       FW_API_KEY: dev-api-key
+      # The catalogue lives on the volume, so builds survive a recreate:
+      #   docker compose exec mother feast-watch build v1.5.0
+      FW_BUILD_DIR: /data/builds
     restart: unless-stopped
     volumes: [ "mother-data:/data" ]
     ports: [ "8443:8443" ]

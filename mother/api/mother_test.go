@@ -64,7 +64,7 @@ func TestSetMotherVersionRejections(t *testing.T) {
 		want    string
 	}{
 		{"the moving alias", stubTarget{true, "linux-amd64"}, `{"version":"latest"}`, "moving alias"},
-		{"an unpublished version", stubTarget{true, "linux-amd64"}, `{"version":"v9.9.9"}`, "no published release"},
+		{"an unpublished version", stubTarget{true, "linux-amd64"}, `{"version":"v9.9.9"}`, "has not been built on this mother"},
 		{"a platform with no build", stubTarget{true, "linux-arm64"}, `{"version":"v1.4.0"}`, "no v1.4.0 mother build for linux-arm64"},
 		{"a deployment that cannot promote", stubTarget{false, "linux-amd64"}, `{"version":"v1.4.0"}`, "not available on this deployment"},
 	} {

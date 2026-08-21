@@ -2,10 +2,10 @@
 // and where they are downloaded from.
 //
 // It is imported by the agent (to build its own download URL), by the mother
-// (to index what a GitHub release offers) and mirrored by the release
-// workflow's build matrix. Before this existed the mother's platform list and
-// the release script's had already drifted, with a comment saying they must
-// agree as the only enforcement.
+// (to name what it compiles and to index its own catalogue) and by the
+// installer template the mother serves. Before this existed the mother's
+// platform list and the release script's had already drifted, with a comment
+// saying they must agree as the only enforcement.
 package release
 
 import (
@@ -14,16 +14,15 @@ import (
 	"strings"
 )
 
-// DefaultBaseURL is the public repository agents download from. Public is what
-// makes the download token-free; making the repository private would break
-// every agent's update path at once.
-const DefaultBaseURL = "https://github.com/osman-yahya/feast-watch"
-
-// DefaultAPIBaseURL is where the mother reads the list of releases.
-const DefaultAPIBaseURL = "https://api.github.com"
-
-// Repo is the owner/name pair the API path is built from.
-const Repo = "osman-yahya/feast-watch"
+// DefaultSourceRepoURL is the repository the mother fetches SOURCE from when it
+// is told to build a version it has no local checkout of.
+//
+// It is the only address in this project that points at the internet, and only
+// the mother's own host ever resolves it. No agent has it: agents download from
+// their mother and nothing else (mother/api/binaries.go), which is what makes
+// "an agent never leaves the private network" a property of the code rather
+// than of how somebody configured it.
+const DefaultSourceRepoURL = "https://github.com/osman-yahya/feast-watch"
 
 // assetPrefix is the stem every agent asset shares.
 const assetPrefix = "feast-watch-agent-"
@@ -146,13 +145,18 @@ func builtFor(platforms []Platform, plat string) bool {
 	return false
 }
 
-// DownloadURL locates one asset of a tagged release.
+// DownloadURL locates one asset of a built version on the host serving it.
+//
+// The path shape is GitHub's, kept deliberately: the mother's download routes
+// answer it (mother/api/binaries.go), so the agent and the installer build the
+// same URL they always did against an address that never leaves the private
+// network.
 func DownloadURL(baseURL, tag, asset string) string {
 	return strings.TrimSuffix(baseURL, "/") + "/releases/download/" + tag + "/" + asset
 }
 
-// LatestDownloadURL is GitHub's moving pointer at the newest release, which is
-// what the installer needs: it has no version to pin.
+// LatestDownloadURL is the moving pointer at the newest build the mother holds,
+// which is what the installer needs: it has no version to pin.
 func LatestDownloadURL(baseURL, asset string) string {
 	return strings.TrimSuffix(baseURL, "/") + "/releases/latest/download/" + asset
 }

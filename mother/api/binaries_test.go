@@ -5,11 +5,12 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/osman-yahya/feast-watch/mother/mirror"
+	catalogue "github.com/osman-yahya/feast-watch/mother/build"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	"github.com/osman-yahya/feast-watch/mother/store"
 )
@@ -21,9 +22,15 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// mirrorAPI is a mother that mirrors one published build, v1.0.2, and knows
-// about it in its release index — the state a real mother reaches by polling.
-func mirrorAPI(t *testing.T, body []byte) (*API, *httptest.Server) {
+// catalogueAPI is a mother holding one built version, v1.0.2, in the catalogue
+// on disk and in its release index — the state a real mother is in after
+// `feast-watch build v1.0.2` and one poll.
+//
+// The files are written rather than compiled: what these routes do with a
+// catalogue is not conditional on a Go toolchain being present, and requiring
+// one to run the tests would put a cross-compile of six binaries in front of
+// every run.
+func catalogueAPI(t *testing.T, body []byte) *API {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -31,32 +38,37 @@ func mirrorAPI(t *testing.T, body []byte) (*API, *httptest.Server) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, ".sha256"):
-			w.Write([]byte(sha256Hex(body) + "\n"))
-		case strings.Contains(r.URL.Path, "feast-watch-"):
-			w.Write(body)
-		default:
-			http.NotFound(w, r)
+	dir := filepath.Join(t.TempDir(), "builds")
+	if err := os.MkdirAll(filepath.Join(dir, "v1.0.2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range []string{agentAsset, "feast-watch-mother-linux-amd64"} {
+		path := filepath.Join(dir, "v1.0.2", asset)
+		if err := os.WriteFile(path, body, 0o755); err != nil {
+			t.Fatal(err)
 		}
-	}))
-	t.Cleanup(upstream.Close)
+		if err := os.WriteFile(path+".sha256", []byte(sha256Hex(body)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	a := New(st, "adminkey", withBothReleases(
 		[]release.Build{build("v1.0.2", "linux-amd64")},
 		[]release.Build{build("v1.0.2", "linux-amd64")},
 	))
-	a.SetBinarySource(mirror.New(filepath.Join(t.TempDir(), "binaries"), upstream.URL, upstream.Client()))
-	return a, upstream
+	// Imported under an alias: `build` is already versions_test.go's helper for
+	// naming one published version, and the package that compiles them is the
+	// newcomer here.
+	a.SetBinarySource(catalogue.New(dir))
+	return a
 }
 
 // The route shape is GitHub's on purpose: the agent builds its download URL
-// with shared/release.DownloadURL and knows nothing about the mother being in
-// the way, so pointing RELEASE_BASE_URL at the mother is the whole change.
+// with shared/release.DownloadURL and needed no change when the bytes stopped
+// coming from a release host and started being compiled by the mother.
 func TestServesABuildAtGitHubsURLShape(t *testing.T) {
 	body := []byte("AGENT-BINARY")
-	a, _ := mirrorAPI(t, body)
+	a := catalogueAPI(t, body)
 
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -74,7 +86,7 @@ func TestServesABuildAtGitHubsURLShape(t *testing.T) {
 // too — and it has to describe the bytes the mother actually holds.
 func TestServesTheChecksumCompanion(t *testing.T) {
 	body := []byte("AGENT-BINARY")
-	a, _ := mirrorAPI(t, body)
+	a := catalogueAPI(t, body)
 
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -91,7 +103,7 @@ func TestServesTheChecksumCompanion(t *testing.T) {
 // The installer has no version to pin, so it asks for the moving pointer.
 func TestServesLatestByResolvingItAgainstTheIndex(t *testing.T) {
 	body := []byte("AGENT-BINARY")
-	a, _ := mirrorAPI(t, body)
+	a := catalogueAPI(t, body)
 
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -106,9 +118,9 @@ func TestServesLatestByResolvingItAgainstTheIndex(t *testing.T) {
 }
 
 // The tag and the asset both arrive from the network and both become a path.
-// Only names this project actually publishes may reach the filesystem.
-func TestRefusesAnythingThatIsNotAPublishedBuild(t *testing.T) {
-	a, _ := mirrorAPI(t, []byte("AGENT-BINARY"))
+// Only names this project actually builds may reach the filesystem.
+func TestRefusesAnythingThatIsNotABuiltAsset(t *testing.T) {
+	a := catalogueAPI(t, []byte("AGENT-BINARY"))
 
 	for _, path := range []string{
 		"/releases/download/v1.0.2/../../etc/passwd",
@@ -125,12 +137,24 @@ func TestRefusesAnythingThatIsNotAPublishedBuild(t *testing.T) {
 	}
 }
 
-// Which release host a freshly installed agent is pointed at is decided by
-// whether this mother mirrors — and the agent needs no code to understand
-// either answer, because RELEASE_BASE_URL was already its way of being told.
-func TestInstallScriptNamesTheMotherWhenItMirrors(t *testing.T) {
-	body := []byte("AGENT-BINARY")
-	a, _ := mirrorAPI(t, body)
+// A platform the index lists but the catalogue does not hold is a 404, not a
+// 500 and not an empty 200: the agent asking has no other route to a binary,
+// so the answer has to be one its error message can carry back to the panel.
+func TestAVersionNotOnDiskIs404(t *testing.T) {
+	a := catalogueAPI(t, []byte("AGENT-BINARY"))
+
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/releases/download/v1.0.2/feast-watch-agent-linux-arm64", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+}
+
+// The served installer points every new host at this mother, for the binary as
+// well as for the config. It is the only address such a host can reach.
+func TestInstallScriptNamesTheMotherForBinaries(t *testing.T) {
+	a := catalogueAPI(t, []byte("AGENT-BINARY"))
 	a.SetPublicURL("http://10.0.0.1:8443")
 
 	srv, err := a.st.AddServer("web-1")
@@ -143,35 +167,23 @@ func TestInstallScriptNamesTheMotherWhenItMirrors(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "RELEASE_BASE_URL=http://10.0.0.1:8443") {
-		t.Fatalf("the installer does not point at the mother:\n%s", w.Body)
+	body := w.Body.String()
+	if !strings.Contains(body, "MOTHER_URL=http://10.0.0.1:8443") {
+		t.Fatalf("the installer does not name the mother:\n%s", body)
 	}
-	if strings.Contains(w.Body.String(), "RELEASE_BASE_URL=https://github.com") {
-		t.Fatal("the installer still names the public release host")
+	if !strings.Contains(body, `"$MOTHER_URL/releases/latest/download/$asset"`) {
+		t.Fatalf("the installer does not download from the mother:\n%s", body)
 	}
-}
-
-// And without a mirror it names the public host, which is the arrangement the
-// agents started with and the better one where it works.
-func TestInstallScriptNamesGitHubWithoutAMirror(t *testing.T) {
-	a, st := motherAPI(t, nil)
-	a.SetPublicURL("http://10.0.0.1:8443")
-
-	srv, err := st.AddServer("web-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/install/"+srv.Token+".sh", nil))
-
-	if !strings.Contains(w.Body.String(), "RELEASE_BASE_URL=https://github.com/") {
-		t.Fatalf("the installer does not name the public release host:\n%s", w.Body)
+	if strings.Contains(body, "github.com") {
+		t.Fatalf("the installer sends the host to the internet:\n%s", body)
 	}
 }
 
-// A mother that is not mirroring must say it holds no builds rather than
-// answer with something.
-func TestDownloadRoutesAre404WithoutAMirror(t *testing.T) {
+// A mother wired without its catalogue must say it holds no builds rather than
+// answer with something. This is a wiring mistake rather than a deployment
+// choice — every mother compiles and serves — so what it must not do is fail
+// in a way that takes the monitoring down with it.
+func TestDownloadRoutesAre404WithoutACatalogue(t *testing.T) {
 	a, _ := motherAPI(t, nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,

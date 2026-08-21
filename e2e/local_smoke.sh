@@ -14,7 +14,7 @@
 #   2  a push lands in the rollup tiers and the raw samples table does not exist
 #   3  the chart reads back what was pushed
 #   4  groups: create, duplicate-name conflict, membership, filter, bulk clear
-#   5  rollout targets are validated against published GitHub releases
+#   5  rollout targets are validated against the mother's own build catalogue
 #   6  a settings payload missing a retention key is refused
 #   7  the live view serves pushes from memory, with a cheap `since` poll
 #   8  the push interval an operator sets reaches the agent in its next response
@@ -138,19 +138,20 @@ check_plain_http() {
 
   TOKEN=$(echo "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["server"]["token"])')
 
-  # The served installer must fetch binaries from the release host, not here.
+  # The served installer must fetch binaries from this mother and from nothing
+  # else: the hosts it runs on have no route off the network.
   local script
   script=$(curl -sf "$BASE/install/$TOKEN.sh")
-  # shellcheck disable=SC2016  # the pattern is the literal text we are
-  # asserting is ABSENT from the served installer, not a variable to expand.
+  # shellcheck disable=SC2016  # the pattern is literal text asserted about the
+  # served installer, not a variable to expand here.
   case "$script" in
-    *'$MOTHER_URL/download'*) fail "installer still downloads binaries from the mother" ;;
-    # The default, and the better arrangement wherever agents can reach the
-    # release host: binary distribution stays off the monitoring path. A mother
-    # started with FW_MIRROR_BINARIES=true names itself here instead, which is
-    # covered by mother/api's install-script tests.
-    *"RELEASE_BASE_URL=https://github.com/"*) pass "installer downloads from GitHub Releases" ;;
-    *) fail "installer does not name a release host" ;;
+    *'$MOTHER_URL/releases/latest/download/'*) pass "installer downloads from the mother" ;;
+    *) fail "installer does not download from the mother" ;;
+  esac
+  case "$script" in
+    *github.com*) fail "installer sends the host to the internet" ;;
+    *RELEASE_BASE_URL*) fail "installer still carries a second host to fetch from" ;;
+    *) pass "installer names no host but the mother" ;;
   esac
   case "$script" in
     *"feast-watch-agent-uninstall"*) pass "installer leaves an uninstaller on disk" ;;
@@ -266,13 +267,13 @@ check_groups() {
   pass "bulk clear reaches every member"
 }
 
-# 5 — rollout targets are checked against published releases.
+# 5 — rollout targets are checked against the mother's build catalogue.
 check_rollout_validation() {
   step "5. rollout targets are validated"
   local msg
   msg=$(error_of PUT /api/servers/1/version '{"version":"v9.9.9"}')
   case "$msg" in
-    *"no published release"*) pass "unpublished version refused: $msg" ;;
+    *"has not been built on this mother"*) pass "unbuilt version refused: $msg" ;;
     *) fail "unexpected rejection: $msg" ;;
   esac
 
@@ -282,9 +283,9 @@ check_rollout_validation() {
     *) fail "unexpected rejection: $msg" ;;
   esac
 
-  # The index itself must have been reachable, whatever it contains.
+  # The catalogue itself must have been read, whatever it contains.
   grep -q '"checked_at"' <<<"$(api /api/version)" || fail "version endpoint reports no check time"
-  pass "release index reports its freshness"
+  pass "the build index reports its freshness"
 }
 
 # 6 — the settings guard that used to wipe a retention tier.

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/osman-yahya/feast-watch/mother/store"
-	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
@@ -38,10 +37,11 @@ func TestInstallScriptRendersTokenAndMotherURL(t *testing.T) {
 	}
 }
 
-// The mother serves no binaries at all. Agents download builds from the public
-// GitHub release, so there is nothing here to path-traverse into and nothing to
-// stage before a rollout can work.
-func TestMotherServesNoBinaries(t *testing.T) {
+// The routes a much older mother served binaries on are gone. Builds are served
+// from the catalogue at GitHub's URL shape (binaries.go) and nowhere else, so
+// these paths must stay dead rather than becoming a second, unvalidated way
+// into the filesystem.
+func TestRetiredDownloadRoutesStayGone(t *testing.T) {
 	a, _ := setup(t)
 	for _, path := range []string{
 		"/download/agent/v1.3.0",
@@ -73,25 +73,23 @@ func fetchInstallScript(t *testing.T, a *API, st *store.Store, name string) stri
 	return w.Body.String()
 }
 
-// A freshly constructed API must not be able to hand agents a scheme the
-// mother does not serve. There is no setter that raises the scheme on its own:
-// the whole URL is supplied or the plain-HTTP default stands.
-// The installer pulls the binary from the release host and verifies it before
-// installing. Fetching it from the mother would put binary distribution back
-// on the monitoring path.
-func TestInstallScriptDownloadsFromTheReleaseHost(t *testing.T) {
+// The installer pulls the binary from the mother and verifies it before
+// installing. The host it runs on has no route to anywhere else, so a script
+// naming any other address would install nothing at all — and would say so only
+// once somebody was watching a host that never came online.
+func TestInstallScriptDownloadsFromTheMother(t *testing.T) {
 	a, st := setup(t)
 	a.SetPublicURL("http://10.0.0.1:8443")
 
-	body := fetchInstallScript(t, a, st, "From_GitHub")
-	if !strings.Contains(body, "RELEASE_BASE_URL="+release.DefaultBaseURL) {
-		t.Fatalf("installer must carry the release host:\n%s", body)
+	body := fetchInstallScript(t, a, st, "From_Mother")
+	if !strings.Contains(body, "$MOTHER_URL/releases/latest/download/") {
+		t.Fatalf("installer must download from the mother:\n%s", body)
 	}
-	if !strings.Contains(body, "$RELEASE_BASE_URL/releases/latest/download/") {
-		t.Fatalf("installer must download from the release host:\n%s", body)
+	if strings.Contains(body, "RELEASE_BASE_URL") {
+		t.Fatalf("installer must carry no second host to fetch from:\n%s", body)
 	}
-	if strings.Contains(body, "$MOTHER_URL/download") {
-		t.Fatalf("installer must not fetch binaries from the mother:\n%s", body)
+	if strings.Contains(body, "github.com") {
+		t.Fatalf("installer must not send the host to the internet:\n%s", body)
 	}
 	if !strings.Contains(body, ".sha256") {
 		t.Fatalf("installer must verify the download before installing it:\n%s", body)
@@ -107,9 +105,6 @@ func TestInstallScriptDefaultsToPlainHTTP(t *testing.T) {
 	if !strings.Contains(body, "MOTHER_URL=http://127.0.0.1:8443") {
 		t.Fatalf("default must be plain HTTP:\n%s", body)
 	}
-	// Only the mother's own URL is asserted: RELEASE_BASE_URL is github.com and
-	// is legitimately https — it is a public host with a trusted certificate,
-	// not something this mother serves.
 	if strings.Contains(body, "MOTHER_URL=https://") {
 		t.Fatalf("the mother must not render an https URL for itself by default:\n%s", body)
 	}

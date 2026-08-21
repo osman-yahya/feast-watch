@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"text/template"
-
-	"github.com/osman-yahya/feast-watch/shared/release"
 )
 
 //go:embed install.sh.tmpl
@@ -27,10 +25,10 @@ var uninstallScript string
 var installTmpl = template.Must(
 	template.New("install").Option("missingkey=error").Parse(installTmplSrc))
 
-// registerInstall exposes the per-token install script. There is deliberately
-// no binary download route: agents fetch builds from the public GitHub
-// release host named in it, so a rollout
-// cannot be blocked by a file nobody staged on it.
+// registerInstall exposes the per-token install script. The script it renders
+// names one address — this mother — for the config, the uninstaller and the
+// binary alike, because that is the only address the host it runs on can
+// reach. The download routes it uses are registered in binaries.go.
 func (a *API) registerInstall(mux *http.ServeMux) {
 	mux.HandleFunc("GET /install/{token}", a.handleInstallScript)
 	// Unauthenticated on purpose. It carries no secret, and requiring a token
@@ -57,10 +55,9 @@ func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 	// installer rather than nothing at all.
 	var buf bytes.Buffer
 	if err := installTmpl.Execute(&buf, map[string]any{
-		"MotherURL":      a.publicURL,
-		"Token":          srv.Token,
-		"ServerName":     srv.Name,
-		"ReleaseBaseURL": a.releaseBaseURLForAgents(),
+		"MotherURL":  a.publicURL,
+		"Token":      srv.Token,
+		"ServerName": srv.Name,
 	}); err != nil {
 		slog.Error("render install script", "err", err)
 		http.Error(w, "install script unavailable", http.StatusInternalServerError)
@@ -68,22 +65,4 @@ func (a *API) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript")
 	w.Write(buf.Bytes())
-}
-
-// releaseBaseURLForAgents is where a freshly installed agent will fetch its
-// binaries from.
-//
-// The mother, when it is mirroring. Agents on this fleet have no route to the
-// internet, so naming the public release host would hand every new host an
-// address it cannot reach — and the failure would arrive later, as an update
-// that never lands, rather than at install time where someone is watching.
-//
-// The public release host otherwise, which is the arrangement the agents
-// started with and the better one wherever it is available: binary
-// distribution stays off the monitoring path entirely.
-func (a *API) releaseBaseURLForAgents() string {
-	if a.binaries == nil {
-		return release.DefaultBaseURL
-	}
-	return a.publicURL
 }

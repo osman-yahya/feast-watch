@@ -2,6 +2,11 @@ package release
 
 import "testing"
 
+// motherURL stands in for the one address an agent has. Every download URL in
+// this project is built against its mother, so that is what these assert
+// against — there is no public host left in the path.
+const motherURL = "http://10.0.0.1:8443"
+
 func TestAssetNameIsPlatformKeyed(t *testing.T) {
 	if got := AssetName("linux", "amd64"); got != "feast-watch-agent-linux-amd64" {
 		t.Fatalf("asset name: %q", got)
@@ -15,25 +20,25 @@ func TestAssetNameIsPlatformKeyed(t *testing.T) {
 }
 
 func TestDownloadURLPinsTheTag(t *testing.T) {
-	got := DownloadURL(DefaultBaseURL, "v1.3.0", AssetName("linux", "amd64"))
-	want := "https://github.com/osman-yahya/feast-watch/releases/download/v1.3.0/feast-watch-agent-linux-amd64"
+	got := DownloadURL(motherURL, "v1.3.0", AssetName("linux", "amd64"))
+	want := "http://10.0.0.1:8443/releases/download/v1.3.0/feast-watch-agent-linux-amd64"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
 
-// The installer has no version to pin — it takes whatever is current — so it
-// needs GitHub's moving pointer rather than a tag.
+// The installer has no version to pin — it takes whatever the mother has built
+// most recently — so it needs the moving pointer rather than a tag.
 func TestLatestDownloadURL(t *testing.T) {
-	got := LatestDownloadURL(DefaultBaseURL, AssetName("linux", "arm64"))
-	want := "https://github.com/osman-yahya/feast-watch/releases/latest/download/feast-watch-agent-linux-arm64"
+	got := LatestDownloadURL(motherURL, AssetName("linux", "arm64"))
+	want := "http://10.0.0.1:8443/releases/latest/download/feast-watch-agent-linux-arm64"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
 
 func TestDownloadURLTolerARatesATrailingSlash(t *testing.T) {
-	if got := DownloadURL(DefaultBaseURL+"/", "v1.3.0", "a"); got != DownloadURL(DefaultBaseURL, "v1.3.0", "a") {
+	if got := DownloadURL(motherURL+"/", "v1.3.0", "a"); got != DownloadURL(motherURL, "v1.3.0", "a") {
 		t.Fatalf("trailing slash changed the URL: %q", got)
 	}
 }

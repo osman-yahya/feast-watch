@@ -5,41 +5,41 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/osman-yahya/feast-watch/mother/mirror"
 	"github.com/osman-yahya/feast-watch/mother/release"
 	sharedrelease "github.com/osman-yahya/feast-watch/shared/release"
 )
 
-// BinarySource is where the mother gets the bytes an agent downloads.
-//
-// Two things satisfy it and the difference is where the binary came from, not
-// how it is served: mother/mirror fetches a published release and keeps it,
-// mother/build compiles it here. The routes below cannot tell them apart, and
-// neither can the agent.
+// BinarySource is where the mother gets the bytes an agent downloads:
+// mother/build.Store, reading the catalogue this mother compiled into. It is an
+// interface so these routes can be tested without a compiler on the machine
+// running the tests, not because a second implementation is expected — the
+// mother building what its fleet runs is the whole arrangement, not an option
+// within it.
 type BinarySource interface {
 	Ensure(version, asset string) (string, error)
 }
 
-// SetBinarySource gives the mother something to serve builds from. Unset, the
-// download routes answer 404 — which is what a mother whose agents fetch from
-// the release host themselves should say, rather than pretending to hold
-// builds.
+// SetBinarySource gives the mother its catalogue. Every mother has one; a nil
+// source is a wiring mistake rather than a deployment choice, and the download
+// routes answer 404 rather than panicking so the mistake shows up as an agent
+// that cannot update instead of as a dead process.
 func (a *API) SetBinarySource(s BinarySource) { a.binaries = s }
 
-// The routes deliberately mirror GitHub's own URL shape:
+// The routes keep GitHub's URL shape:
 //
 //	/releases/download/<tag>/<asset>
 //	/releases/latest/download/<asset>
 //
-// The agent builds its download URL with shared/release.DownloadURL and the
-// installer with LatestDownloadURL, neither of which knows the mother might be
-// in the way. Matching the shape is what makes pointing RELEASE_BASE_URL at the
-// mother the entire change on the agent side — no new protocol, no new client.
+// Nothing is on the other end of it any more — the bytes are compiled here —
+// but the shape is what the agent (shared/release.DownloadURL) and the served
+// installer (LatestDownloadURL) already build, and keeping it meant the agents
+// needed no new protocol and no new client when the source of their binaries
+// moved home.
 //
-// Unauthenticated, deliberately. These are the same bytes the public GitHub
-// release serves to anyone; the token they would be gated by is the one thing
-// on the agent that IS secret, and sending it on every binary fetch would
-// spread it further for no gain. The mother sits on a private network.
+// Unauthenticated, deliberately. The token that would gate them is the one
+// thing on an agent that IS secret, and sending it on every binary fetch would
+// spread it further to protect bytes that every agent on the fleet is running
+// anyway. The mother sits on a private network, and so do they.
 func (a *API) registerBinaries(mux *http.ServeMux) {
 	mux.HandleFunc("GET /releases/download/{tag}/{asset}", a.handleDownload)
 	mux.HandleFunc("GET /releases/latest/download/{asset}", a.handleDownloadLatest)
@@ -90,12 +90,13 @@ func (a *API) latestTagFor(asset string) (string, bool) {
 // path separator to the language.
 func (a *API) serveAsset(w http.ResponseWriter, r *http.Request, tag, asset string) {
 	if a.binaries == nil {
+		slog.Error("a download was asked for but this mother has no build catalogue")
 		http.Error(w, "this mother serves no binaries", http.StatusNotFound)
 		return
 	}
 
 	binary := strings.TrimSuffix(asset, sharedrelease.ChecksumSuffix)
-	if err := mirror.Verify(binary); err != nil {
+	if _, _, ok := sharedrelease.AssetKindOf(binary); !ok {
 		http.Error(w, "no such build", http.StatusNotFound)
 		return
 	}
@@ -106,11 +107,11 @@ func (a *API) serveAsset(w http.ResponseWriter, r *http.Request, tag, asset stri
 
 	path, err := a.binaries.Ensure(tag, binary)
 	if err != nil {
-		// The mother could not get it from the release host. Say so plainly:
-		// the agent asking has no other route to the binary, so this is the
-		// end of the road for that rollout until it is fixed.
-		slog.Error("mirroring a release asset", "tag", tag, "asset", binary, "err", err)
-		http.Error(w, "could not fetch this build from the release host", http.StatusBadGateway)
+		// The index named a version this platform has no binary for. Say so
+		// plainly: the agent asking has no other route to a binary, so this is
+		// the end of the road for that rollout until somebody builds it here.
+		slog.Error("serving a build from the catalogue", "tag", tag, "asset", binary, "err", err)
+		http.Error(w, "this build is not in the catalogue", http.StatusNotFound)
 		return
 	}
 	if asset != binary {
